@@ -1,0 +1,38 @@
+{
+  "name": "agent-spy",
+  "version": "1.0.0",
+  "description": "WinSpy inspired tool for Agents - The last desktop automation tool your Agents need",
+  "main": "index.js",
+  "scripts": {
+    "format": "cargo fmt",
+    "build": "cargo build",
+    "build:release": "cargo build --release",
+    "build:linux": "cargo build --release --target x86_64-unknown-linux-gnu",
+    "build:windows": "cargo build --release --target x86_64-pc-windows-msvc",
+    "build:xwindows": "run-s build:xwindows:*",
+    "build:xwindows:target": "rustup target add x86_64-pc-windows-msvc",
+    "build:xwindows:xwin": "cargo install cargo-xwin --locked",
+    "build:xwindows:build": "cross-env PATH=$(dirname $(which clang-cl)):$(dirname $(which lld-link)):$PATH cargo xwin build --release --target x86_64-pc-windows-msvc",
+    "build:macos": "cargo build --release --target aarch64-apple-darwin",
+    "build:macos:intel": "cargo build --release --target x86_64-apple-darwin",
+    "check": "cargo check",
+    "test": "cargo test",
+    "verify": "cargo check && cargo test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3p3r/agent-spy.git"
+  },
+  "keywords": [],
+  "author": "Sepehr Laal",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/3p3r/agent-spy/issues"
+  },
+  "homepage": "https://github.com/3p3r/agent-spy#readme",
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "npm-run-all": "^4.1.5"
+  }
+}

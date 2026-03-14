@@ -21,3 +21,9 @@ windows = { version = "0.58", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"
+
+[package.metadata.patch]
+crates = ["screenshots"]
+
+[patch.crates-io]
+screenshots = { path = "./target/patch/screenshots-0.8.10" }

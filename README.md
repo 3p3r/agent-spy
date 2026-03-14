@@ -12,8 +12,10 @@ Use the package scripts to drive Cargo builds:
 - `npm run build:release` builds a native release binary.
 - `npm run build:linux` builds a Linux release binary.
 - `npm run build:windows` builds a Windows release binary.
+- `npm run build:xwindows` cross-builds a Windows release binary from non-Windows hosts.
 - `npm run build:macos` builds an Apple Silicon macOS release binary.
 - `npm run build:macos:intel` builds an Intel macOS release binary.
 - `npm run verify` runs `cargo check` and `cargo test`.
 
 Cross-target scripts require the corresponding Rust target toolchain to be installed.
+Patch scripts require `cargo patch-crate` (`cargo install patch-crate`).

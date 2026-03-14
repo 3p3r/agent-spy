@@ -5,10 +5,13 @@ use iced::widget::image::{self as iced_image, Handle};
 use iced::widget::{
     Column, Row, button, column, container, row, scrollable, text, text_input, tooltip,
 };
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Length, Size, Subscription, Task, window};
 
 use crate::message::{Message, MouseButtonChoice};
 use crate::platform::{PermissionStatus, Platform, WindowInfo, create_platform};
+
+const WINDOW_WIDTH: f32 = 960.0;
+const WINDOW_HEIGHT: f32 = 600.0;
 
 pub struct AgentSpy {
     platform: Box<dyn Platform>,
@@ -807,6 +810,13 @@ impl AgentSpy {
 pub fn run() -> iced::Result {
     iced::application(AgentSpy::new, AgentSpy::update, AgentSpy::view)
         .title("agent-spy")
+        .window(window::Settings {
+            size: Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+            min_size: Some(Size::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
+            max_size: Some(Size::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
+            resizable: false,
+            ..window::Settings::default()
+        })
         .subscription(AgentSpy::subscription)
         .run()
 }

@@ -105,16 +105,33 @@ fn run(args: Vec<String>) -> Result<String> {
         }
         CliCommand::CheckPermissions => {
             let permissions = core.permissions();
-            Ok(format!(
+            let mut output = format!(
                 "screen_capture={}\naccessibility={}\ninput_simulation={}\ncursor_tracking={}",
                 permissions.screen_capture,
                 permissions.accessibility,
                 permissions.input_simulation,
                 permissions.cursor_tracking
-            ))
+            );
+
+            if cfg!(target_os = "linux") && is_wayland_session() {
+                output.push_str(
+                    "\nsession_supported=false\nreason=Wayland sessions are unsupported; use X11.",
+                );
+            } else {
+                output.push_str("\nsession_supported=true");
+            }
+
+            Ok(output)
         }
         CliCommand::Version => Ok(format!("agent-spy {}", env!("CARGO_PKG_VERSION"))),
     }
+}
+
+fn is_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
 }
 
 #[derive(Debug, Parser)]

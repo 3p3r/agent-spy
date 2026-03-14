@@ -1,6 +1,6 @@
 # agent-spy
 
-WinSpy inspired tool for Agents - The last desktop automation tool your Agents need
+WinSpy inspired tool for Agents - The last desktop automation tool your Agents need. Lets you or your agent take over your desktop, an existing Window, a browser Tab, or anything else with a GUI.
 
 ![agent-spy](./demo.png)
 
@@ -61,4 +61,6 @@ Notes:
 - `capture-screen` and `capture-window` require `--output`.
 - Commands that manipulate windows require accessibility support.
 - Input simulation commands require input simulation support.
+- Linux GUI/CLI automation support is X11-only.
+- Wayland sessions are intentionally unsupported; run `agent-spy` in an X11 session.
 Patch scripts require `cargo patch-crate` (`cargo install patch-crate`).

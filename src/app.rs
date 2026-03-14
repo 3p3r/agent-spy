@@ -7,11 +7,24 @@ use iced::widget::{
 };
 use iced::{Element, Length, Size, Subscription, Task, window};
 
-use crate::message::{Message, MouseButtonChoice};
+use crate::message::{AppSection, Message, MouseButtonChoice};
 use crate::platform::{PermissionStatus, Platform, WindowInfo, create_platform};
 
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 600.0;
+const PADDING_ROOT: u16 = 16;
+const PADDING_CARD: u16 = 12;
+const SPACING_XS: u32 = 6;
+const SPACING_SM: u32 = 10;
+const SPACING_MD: u32 = 14;
+
+#[derive(Debug, Clone, Copy)]
+enum StatusTone {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 pub struct AgentSpy {
     platform: Box<dyn Platform>,
@@ -22,6 +35,7 @@ pub struct AgentSpy {
     track_mouse: bool,
     cursor_position: Option<(i32, i32)>,
     status: String,
+    status_tone: StatusTone,
     screenshot: Option<Handle>,
     enigo: Option<Enigo>,
     move_x: String,
@@ -33,6 +47,7 @@ pub struct AgentSpy {
     click_x: String,
     click_y: String,
     click_button: MouseButtonChoice,
+    active_section: AppSection,
 }
 
 impl AgentSpy {
@@ -54,6 +69,7 @@ impl AgentSpy {
             track_mouse: false,
             cursor_position: None,
             status: String::new(),
+            status_tone: StatusTone::Info,
             screenshot: None,
             enigo,
             move_x: String::new(),
@@ -65,6 +81,7 @@ impl AgentSpy {
             click_x: String::new(),
             click_y: String::new(),
             click_button: MouseButtonChoice::Left,
+            active_section: AppSection::Overview,
         };
 
         app.refresh_windows();
@@ -73,6 +90,13 @@ impl AgentSpy {
     }
 
     fn set_startup_status(&mut self) {
+        if Self::is_linux_wayland_session() {
+            self.status =
+                "Wayland sessions are unsupported. Start the app in an X11 session.".to_string();
+            self.status_tone = StatusTone::Warning;
+            return;
+        }
+
         let mut missing = Vec::new();
 
         if !self.permissions.screen_capture {
@@ -85,16 +109,33 @@ impl AgentSpy {
             missing.push("input simulation");
         }
         if !self.permissions.cursor_tracking {
-            missing.push("cursor tracking (Wayland limitation)");
+            missing.push("cursor tracking");
         }
 
         if missing.is_empty() {
             self.status = "Ready.".to_string();
+            self.status_tone = StatusTone::Success;
         } else {
             self.status = format!(
                 "Startup checks: unavailable features: {}.",
                 missing.join(", ")
             );
+            self.status_tone = StatusTone::Warning;
+        }
+    }
+
+    fn is_linux_wayland_session() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            std::env::var_os("WAYLAND_DISPLAY").is_some()
+                || std::env::var("XDG_SESSION_TYPE")
+                    .map(|value| value.eq_ignore_ascii_case("wayland"))
+                    .unwrap_or(false)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
         }
     }
 
@@ -109,7 +150,7 @@ impl AgentSpy {
                 }
             }
             Err(error) => {
-                self.status = format!("Failed to list windows: {error}");
+                self.set_status_error(format!("Failed to list windows: {error}"));
             }
         }
     }
@@ -149,7 +190,7 @@ impl AgentSpy {
         on_press: Option<Message>,
         tooltip_text: Option<&'a str>,
     ) -> Element<'a, Message> {
-        let mut action = button(text(label));
+        let mut action = button(text(label)).padding([8, 12]);
         if let Some(message) = on_press {
             action = action.on_press(message);
         }
@@ -162,10 +203,399 @@ impl AgentSpy {
         }
     }
 
+    fn set_status_info(&mut self, value: impl Into<String>) {
+        self.status = value.into();
+        self.status_tone = StatusTone::Info;
+    }
+
+    fn set_status_success(&mut self, value: impl Into<String>) {
+        self.status = value.into();
+        self.status_tone = StatusTone::Success;
+    }
+
+    fn set_status_warning(&mut self, value: impl Into<String>) {
+        self.status = value.into();
+        self.status_tone = StatusTone::Warning;
+    }
+
+    fn set_status_error(&mut self, value: impl Into<String>) {
+        self.status = value.into();
+        self.status_tone = StatusTone::Error;
+    }
+
+    fn status_prefix(&self) -> &'static str {
+        match self.status_tone {
+            StatusTone::Info => "ℹ",
+            StatusTone::Success => "✓",
+            StatusTone::Warning => "⚠",
+            StatusTone::Error => "✕",
+        }
+    }
+
+    fn panel<'a>(title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
+        container(
+            column![text(title).size(18), body]
+                .spacing(SPACING_SM)
+                .width(Length::Fill),
+        )
+        .padding(PADDING_CARD)
+        .style(iced::widget::container::rounded_box)
+        .width(Length::Fill)
+        .into()
+    }
+
+    fn permission_badges(&self) -> Row<'_, Message> {
+        row![
+            text(format!(
+                "{} screen",
+                if self.permissions.screen_capture {
+                    "✓"
+                } else {
+                    "✕"
+                }
+            )),
+            text(format!(
+                "{} window",
+                if self.permissions.accessibility {
+                    "✓"
+                } else {
+                    "✕"
+                }
+            )),
+            text(format!(
+                "{} input",
+                if self.permissions.input_simulation {
+                    "✓"
+                } else {
+                    "✕"
+                }
+            )),
+            text(format!(
+                "{} cursor",
+                if self.permissions.cursor_tracking {
+                    "✓"
+                } else {
+                    "✕"
+                }
+            )),
+        ]
+        .spacing(SPACING_SM)
+    }
+
+    fn section_tabs(&self) -> Row<'_, Message> {
+        AppSection::ALL
+            .iter()
+            .fold(row!().spacing(SPACING_XS), |row, section| {
+                let label = if *section == self.active_section {
+                    format!("● {}", section.label())
+                } else {
+                    section.label().to_string()
+                };
+                row.push(
+                    button(text(label))
+                        .on_press(Message::SelectSection(*section))
+                        .padding([7, 10]),
+                )
+            })
+    }
+
+    fn selected_window_card(&self) -> Element<'_, Message> {
+        let content: Element<'_, Message> = if let Some(window) = self.selected_window() {
+            column![
+                text(format!("Title: {}", window.title)),
+                text(format!("ID: {} | PID: {}", window.id, window.pid)),
+                text(format!("Position: {}, {}", window.x, window.y)),
+                text(format!("Size: {} x {}", window.width, window.height)),
+                text(format!(
+                    "State: minimized={} maximized={}",
+                    window.is_minimized, window.is_maximized
+                )),
+            ]
+            .spacing(SPACING_XS)
+            .into()
+        } else {
+            text("No window selected").into()
+        };
+
+        Self::panel("Selected Window", content)
+    }
+
+    fn window_section_content(&self) -> Element<'_, Message> {
+        let move_resize_controls = column![
+            row![
+                text("X"),
+                text_input("x", &self.move_x)
+                    .on_input(Message::MoveXChanged)
+                    .width(80),
+                text("Y"),
+                text_input("y", &self.move_y)
+                    .on_input(Message::MoveYChanged)
+                    .width(80),
+                Self::action_button(
+                    "Move",
+                    if self.permissions.accessibility {
+                        Some(Message::ApplyMove)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.accessibility,
+                        "Window operations are unavailable in this session.",
+                    ),
+                ),
+            ]
+            .spacing(SPACING_XS),
+            row![
+                text("W"),
+                text_input("w", &self.size_w)
+                    .on_input(Message::SizeWChanged)
+                    .width(80),
+                text("H"),
+                text_input("h", &self.size_h)
+                    .on_input(Message::SizeHChanged)
+                    .width(80),
+                Self::action_button(
+                    "Resize",
+                    if self.permissions.accessibility {
+                        Some(Message::ApplySize)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.accessibility,
+                        "Window operations are unavailable in this session.",
+                    ),
+                ),
+            ]
+            .spacing(SPACING_XS),
+            row![
+                Self::action_button(
+                    "Focus",
+                    if self.permissions.accessibility {
+                        Some(Message::FocusSelected)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.accessibility,
+                        "Window operations are unavailable in this session.",
+                    ),
+                ),
+                Self::action_button(
+                    "Toggle Always-On-Top",
+                    if self.permissions.accessibility {
+                        Some(Message::ToggleAlwaysOnTop)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.accessibility,
+                        "Window operations are unavailable in this session.",
+                    ),
+                ),
+            ]
+            .spacing(SPACING_SM),
+        ]
+        .spacing(SPACING_SM)
+        .into();
+
+        Self::panel("Window Actions", move_resize_controls)
+    }
+
+    fn capture_section_content(&self) -> Element<'_, Message> {
+        let controls = row![
+            Self::action_button(
+                "Capture Selected Window",
+                if self.permissions.screen_capture {
+                    Some(Message::CaptureSelectedWindow)
+                } else {
+                    None
+                },
+                Self::required_permission_tooltip(
+                    self.permissions.screen_capture,
+                    "Screen capture is unavailable in this session.",
+                ),
+            ),
+            Self::action_button(
+                "Capture Screen",
+                if self.permissions.screen_capture {
+                    Some(Message::CaptureScreen)
+                } else {
+                    None
+                },
+                Self::required_permission_tooltip(
+                    self.permissions.screen_capture,
+                    "Screen capture is unavailable in this session.",
+                ),
+            ),
+        ]
+        .spacing(SPACING_SM);
+
+        let screenshot_panel: Element<'_, Message> = if let Some(handle) = &self.screenshot {
+            iced_image::viewer(handle.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            container(text("No screenshot captured yet"))
+                .width(Length::Fill)
+                .height(220)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        };
+
+        Self::panel(
+            "Capture",
+            column![controls, screenshot_panel]
+                .spacing(SPACING_SM)
+                .width(Length::Fill)
+                .into(),
+        )
+    }
+
+    fn input_section_content(&self) -> Element<'_, Message> {
+        let click_button_selector: Row<'_, Message> = MouseButtonChoice::ALL.iter().fold(
+            row![text("Button")].spacing(SPACING_XS),
+            |row, button_choice| {
+                let label = if *button_choice == self.click_button {
+                    format!("● {}", button_choice.label())
+                } else {
+                    button_choice.label().to_string()
+                };
+                row.push(
+                    button(text(label))
+                        .on_press(Message::SelectMouseButton(*button_choice))
+                        .padding([7, 10]),
+                )
+            },
+        );
+
+        let input_controls: Column<'_, Message> = column![
+            row![
+                text_input("Text to send", &self.input_text)
+                    .on_input(Message::InputTextChanged)
+                    .padding(8)
+                    .width(Length::Fill),
+                Self::action_button(
+                    "Send Text",
+                    if self.permissions.input_simulation {
+                        Some(Message::SendInputText)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.input_simulation,
+                        "Input simulation is unavailable in this session.",
+                    ),
+                ),
+            ]
+            .spacing(SPACING_SM),
+            row![
+                text("X"),
+                text_input("x", &self.click_x)
+                    .on_input(Message::ClickXChanged)
+                    .width(100),
+                text("Y"),
+                text_input("y", &self.click_y)
+                    .on_input(Message::ClickYChanged)
+                    .width(100),
+                Self::action_button(
+                    "Move Mouse",
+                    if self.permissions.input_simulation {
+                        Some(Message::MoveMouseToPoint)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.input_simulation,
+                        "Input simulation is unavailable in this session.",
+                    ),
+                ),
+                Self::action_button(
+                    "Send Click",
+                    if self.permissions.input_simulation {
+                        Some(Message::SendMouseClick)
+                    } else {
+                        None
+                    },
+                    Self::required_permission_tooltip(
+                        self.permissions.input_simulation,
+                        "Input simulation is unavailable in this session.",
+                    ),
+                ),
+            ]
+            .spacing(SPACING_SM),
+            click_button_selector,
+        ]
+        .spacing(SPACING_SM);
+
+        Self::panel("Input Simulation", input_controls.into())
+    }
+
+    fn overview_section_content(&self) -> Element<'_, Message> {
+        let quick_actions = row![
+            Self::action_button("Refresh", Some(Message::RefreshWindows), None),
+            Self::action_button(
+                if self.track_mouse {
+                    "Stop Tracking"
+                } else {
+                    "Track Mouse"
+                },
+                if self.permissions.cursor_tracking {
+                    Some(Message::ToggleTrackMouse)
+                } else {
+                    None
+                },
+                Self::required_permission_tooltip(
+                    self.permissions.cursor_tracking,
+                    "Cursor tracking is unavailable in this session.",
+                ),
+            ),
+            Self::action_button(
+                "Capture Screen",
+                if self.permissions.screen_capture {
+                    Some(Message::CaptureScreen)
+                } else {
+                    None
+                },
+                Self::required_permission_tooltip(
+                    self.permissions.screen_capture,
+                    "Screen capture is unavailable in this session.",
+                ),
+            ),
+        ]
+        .spacing(SPACING_SM);
+
+        Self::panel(
+            "Overview",
+            column![
+                text("Quick actions and session capabilities"),
+                self.permission_badges(),
+                quick_actions,
+            ]
+            .spacing(SPACING_SM)
+            .into(),
+        )
+    }
+
+    fn section_content(&self) -> Element<'_, Message> {
+        match self.active_section {
+            AppSection::Overview => self.overview_section_content(),
+            AppSection::Window => self.window_section_content(),
+            AppSection::Capture => self.capture_section_content(),
+            AppSection::Input => self.input_section_content(),
+        }
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::SelectSection(section) => {
+                self.active_section = section;
+            }
             Message::RefreshWindows => {
                 self.refresh_windows();
+                self.set_status_info("Window list refreshed.");
             }
             Message::SearchChanged(value) => {
                 self.search_query = value;
@@ -174,17 +604,17 @@ impl AgentSpy {
                 self.selected_window_id = Some(window_id);
                 if let Some(window) = self.selected_window().cloned() {
                     self.selected_window_mutate_fields(&window);
-                    self.status = format!("Selected window: {}", window.title);
+                    self.set_status_info(format!("Selected window: {}", window.title));
                 }
             }
             Message::ToggleTrackMouse => {
                 if self.permissions.cursor_tracking {
                     self.track_mouse = !self.track_mouse;
-                    self.status = if self.track_mouse {
-                        "Tracking mouse enabled.".to_string()
+                    if self.track_mouse {
+                        self.set_status_success("Tracking mouse enabled.");
                     } else {
-                        "Tracking mouse disabled.".to_string()
-                    };
+                        self.set_status_info("Tracking mouse disabled.");
+                    }
                 }
             }
             Message::Tick => {
@@ -197,7 +627,7 @@ impl AgentSpy {
                             }
                             Ok(None) => {}
                             Err(error) => {
-                                self.status = format!("Window lookup failed: {error}");
+                                self.set_status_error(format!("Window lookup failed: {error}"));
                             }
                         }
                     }
@@ -211,10 +641,10 @@ impl AgentSpy {
                 if let Some(window_id) = self.selected_window_id {
                     match self.platform.focus_window(window_id) {
                         Ok(()) => {
-                            self.status = "Focused selected window.".to_string();
+                            self.set_status_success("Focused selected window.");
                         }
                         Err(error) => {
-                            self.status = format!("Focus failed: {error}");
+                            self.set_status_error(format!("Focus failed: {error}"));
                         }
                     }
                 }
@@ -229,24 +659,24 @@ impl AgentSpy {
                     let x = match Self::parse_i32(&self.move_x, "X") {
                         Ok(value) => value,
                         Err(error) => {
-                            self.status = error;
+                            self.set_status_error(error);
                             return Task::none();
                         }
                     };
                     let y = match Self::parse_i32(&self.move_y, "Y") {
                         Ok(value) => value,
                         Err(error) => {
-                            self.status = error;
+                            self.set_status_error(error);
                             return Task::none();
                         }
                     };
 
                     match self.platform.set_position(window_id, x, y) {
                         Ok(()) => {
-                            self.status = "Window moved.".to_string();
+                            self.set_status_success("Window moved.");
                             self.refresh_windows();
                         }
-                        Err(error) => self.status = format!("Move failed: {error}"),
+                        Err(error) => self.set_status_error(format!("Move failed: {error}")),
                     }
                 }
             }
@@ -260,24 +690,24 @@ impl AgentSpy {
                     let width = match Self::parse_u32(&self.size_w, "width") {
                         Ok(value) => value,
                         Err(error) => {
-                            self.status = error;
+                            self.set_status_error(error);
                             return Task::none();
                         }
                     };
                     let height = match Self::parse_u32(&self.size_h, "height") {
                         Ok(value) => value,
                         Err(error) => {
-                            self.status = error;
+                            self.set_status_error(error);
                             return Task::none();
                         }
                     };
 
                     match self.platform.set_size(window_id, width, height) {
                         Ok(()) => {
-                            self.status = "Window resized.".to_string();
+                            self.set_status_success("Window resized.");
                             self.refresh_windows();
                         }
-                        Err(error) => self.status = format!("Resize failed: {error}"),
+                        Err(error) => self.set_status_error(format!("Resize failed: {error}")),
                     }
                 }
             }
@@ -292,14 +722,14 @@ impl AgentSpy {
                         .set_always_on_top(window_id, self.always_on_top)
                     {
                         Ok(()) => {
-                            self.status = if self.always_on_top {
-                                "Always-on-top enabled.".to_string()
+                            if self.always_on_top {
+                                self.set_status_success("Always-on-top enabled.");
                             } else {
-                                "Always-on-top disabled.".to_string()
-                            };
+                                self.set_status_info("Always-on-top disabled.");
+                            }
                         }
                         Err(error) => {
-                            self.status = format!("Always-on-top failed: {error}");
+                            self.set_status_error(format!("Always-on-top failed: {error}"));
                             self.always_on_top = !self.always_on_top;
                         }
                     }
@@ -311,7 +741,7 @@ impl AgentSpy {
                 }
 
                 if self.selected_window_id.is_none() {
-                    self.status = "Select a window first.".to_string();
+                    self.set_status_warning("Select a window first.");
                     return Task::none();
                 }
 
@@ -335,14 +765,14 @@ impl AgentSpy {
                                 height,
                                 image.into_raw(),
                             ));
-                            self.status = "Captured selected window region.".to_string();
+                            self.set_status_success("Captured selected window region.");
                         }
                         Err(error) => {
-                            self.status = format!("Window capture failed: {error}");
+                            self.set_status_error(format!("Window capture failed: {error}"));
                         }
                     }
                 } else {
-                    self.status = "Selected window no longer available.".to_string();
+                    self.set_status_warning("Selected window no longer available.");
                 }
             }
             Message::CaptureScreen => {
@@ -381,10 +811,10 @@ impl AgentSpy {
                             height,
                             image.into_raw(),
                         ));
-                        self.status = "Captured screen.".to_string();
+                        self.set_status_success("Captured screen.");
                     }
                     Err(error) => {
-                        self.status = format!("Screen capture failed: {error}");
+                        self.set_status_error(format!("Screen capture failed: {error}"));
                     }
                 }
             }
@@ -397,10 +827,10 @@ impl AgentSpy {
                 if let Some(enigo) = self.enigo.as_mut() {
                     match enigo.text(&self.input_text) {
                         Ok(()) => {
-                            self.status = "Sent keyboard text.".to_string();
+                            self.set_status_success("Sent keyboard text.");
                         }
                         Err(error) => {
-                            self.status = format!("Sending text failed: {error}");
+                            self.set_status_error(format!("Sending text failed: {error}"));
                         }
                     }
                 }
@@ -416,14 +846,14 @@ impl AgentSpy {
                 let x = match Self::parse_i32(&self.click_x, "click X") {
                     Ok(value) => value,
                     Err(error) => {
-                        self.status = error;
+                        self.set_status_error(error);
                         return Task::none();
                     }
                 };
                 let y = match Self::parse_i32(&self.click_y, "click Y") {
                     Ok(value) => value,
                     Err(error) => {
-                        self.status = error;
+                        self.set_status_error(error);
                         return Task::none();
                     }
                 };
@@ -439,13 +869,13 @@ impl AgentSpy {
                     let click_result = enigo.button(button, Direction::Click);
                     match (move_result, click_result) {
                         (Ok(()), Ok(())) => {
-                            self.status = format!(
+                            self.set_status_success(format!(
                                 "Mouse click sent at ({x}, {y}) with {} button.",
                                 self.click_button.label()
-                            );
+                            ));
                         }
                         (Err(error), _) | (_, Err(error)) => {
-                            self.status = format!("Mouse click failed: {error}");
+                            self.set_status_error(format!("Mouse click failed: {error}"));
                         }
                     }
                 }
@@ -458,14 +888,14 @@ impl AgentSpy {
                 let x = match Self::parse_i32(&self.click_x, "mouse X") {
                     Ok(value) => value,
                     Err(error) => {
-                        self.status = error;
+                        self.set_status_error(error);
                         return Task::none();
                     }
                 };
                 let y = match Self::parse_i32(&self.click_y, "mouse Y") {
                     Ok(value) => value,
                     Err(error) => {
-                        self.status = error;
+                        self.set_status_error(error);
                         return Task::none();
                     }
                 };
@@ -473,16 +903,17 @@ impl AgentSpy {
                 if let Some(enigo) = self.enigo.as_mut() {
                     match enigo.move_mouse(x, y, Coordinate::Abs) {
                         Ok(()) => {
-                            self.status = format!("Moved mouse to ({x}, {y}).");
+                            self.set_status_success(format!("Moved mouse to ({x}, {y})."));
                         }
                         Err(error) => {
-                            self.status = format!("Mouse move failed: {error}");
+                            self.set_status_error(format!("Mouse move failed: {error}"));
                         }
                     }
                 }
             }
             Message::ClearStatus => {
                 self.status.clear();
+                self.status_tone = StatusTone::Info;
             }
         }
 
@@ -511,7 +942,8 @@ impl AgentSpy {
         let window_list = filtered_windows
             .into_iter()
             .fold(column![], |column, window| {
-                let label = if window.title.is_empty() {
+                let selected = self.selected_window_id == Some(window.id);
+                let title = if window.title.is_empty() {
                     format!(
                         "#{} [{}x{} @ {},{}]",
                         window.id, window.width, window.height, window.x, window.y
@@ -522,28 +954,20 @@ impl AgentSpy {
                         window.title, window.width, window.height, window.x, window.y
                     )
                 };
+
+                let label = if selected {
+                    format!("● {title}")
+                } else {
+                    format!("  {title}")
+                };
+
                 column.push(
                     button(text(label))
                         .on_press(Message::SelectWindow(window.id))
-                        .width(Length::Fill),
+                        .width(Length::Fill)
+                        .padding([8, 10]),
                 )
             });
-
-        let selected_info = if let Some(window) = self.selected_window() {
-            column![
-                text(format!("ID: {}", window.id)),
-                text(format!("Title: {}", window.title)),
-                text(format!("PID: {}", window.pid)),
-                text(format!("Position: {}, {}", window.x, window.y)),
-                text(format!("Size: {} x {}", window.width, window.height)),
-                text(format!(
-                    "State: minimized={} maximized={}",
-                    window.is_minimized, window.is_maximized
-                )),
-            ]
-        } else {
-            column![text("No window selected")]
-        };
 
         let finder_controls = row![
             Self::action_button("Refresh", Some(Message::RefreshWindows), None),
@@ -560,244 +984,71 @@ impl AgentSpy {
                 },
                 Self::required_permission_tooltip(
                     self.permissions.cursor_tracking,
-                    "Cursor tracking is disabled on Wayland sessions.",
+                    "Cursor tracking is unavailable in this session.",
                 ),
             ),
         ]
-        .spacing(10);
+        .spacing(SPACING_SM);
 
         let search = text_input("Find window by name", &self.search_query)
             .on_input(Message::SearchChanged)
             .padding(8)
             .width(Length::Fill);
 
-        let move_resize_controls = column![
-            row![
-                text("X"),
-                text_input("x", &self.move_x)
-                    .on_input(Message::MoveXChanged)
-                    .width(80),
-                text("Y"),
-                text_input("y", &self.move_y)
-                    .on_input(Message::MoveYChanged)
-                    .width(80),
-                Self::action_button(
-                    "Move",
-                    if self.permissions.accessibility {
-                        Some(Message::ApplyMove)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.accessibility,
-                        "Window move/resize/focus requires accessibility permission.",
-                    ),
-                ),
+        let left_panel = Self::panel(
+            "Window Browser",
+            column![
+                finder_controls,
+                search,
+                self.permission_badges(),
+                scrollable(window_list.spacing(SPACING_XS)).height(Length::Fill),
             ]
-            .spacing(8),
-            row![
-                text("W"),
-                text_input("w", &self.size_w)
-                    .on_input(Message::SizeWChanged)
-                    .width(80),
-                text("H"),
-                text_input("h", &self.size_h)
-                    .on_input(Message::SizeHChanged)
-                    .width(80),
-                Self::action_button(
-                    "Resize",
-                    if self.permissions.accessibility {
-                        Some(Message::ApplySize)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.accessibility,
-                        "Window move/resize/focus requires accessibility permission.",
-                    ),
-                ),
-            ]
-            .spacing(8),
-            row![
-                Self::action_button(
-                    "Focus",
-                    if self.permissions.accessibility {
-                        Some(Message::FocusSelected)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.accessibility,
-                        "Window move/resize/focus requires accessibility permission.",
-                    ),
-                ),
-                Self::action_button(
-                    "Toggle Always-On-Top",
-                    if self.permissions.accessibility {
-                        Some(Message::ToggleAlwaysOnTop)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.accessibility,
-                        "Window move/resize/focus requires accessibility permission.",
-                    ),
-                ),
-            ]
-            .spacing(8)
-        ]
-        .spacing(8);
-
-        let screenshot_controls = row![
-            Self::action_button(
-                "Capture Selected Window",
-                if self.permissions.screen_capture {
-                    Some(Message::CaptureSelectedWindow)
-                } else {
-                    None
-                },
-                Self::required_permission_tooltip(
-                    self.permissions.screen_capture,
-                    "Screen capture permission is missing.",
-                ),
-            ),
-            Self::action_button(
-                "Capture Screen",
-                if self.permissions.screen_capture {
-                    Some(Message::CaptureScreen)
-                } else {
-                    None
-                },
-                Self::required_permission_tooltip(
-                    self.permissions.screen_capture,
-                    "Screen capture permission is missing.",
-                ),
-            ),
-        ]
-        .spacing(8);
-
-        let click_button_selector: Row<'_, Message> = MouseButtonChoice::ALL.iter().fold(
-            row![text("Button:")].spacing(8),
-            |row, button_choice| {
-                let label = if *button_choice == self.click_button {
-                    format!("[{}]", button_choice.label())
-                } else {
-                    button_choice.label().to_string()
-                };
-                row.push(button(text(label)).on_press(Message::SelectMouseButton(*button_choice)))
-            },
+            .spacing(SPACING_SM)
+            .into(),
         );
 
-        let input_controls: Column<'_, Message> = column![
-            row![
-                text_input("Text to send", &self.input_text)
-                    .on_input(Message::InputTextChanged)
-                    .padding(8)
-                    .width(Length::Fill),
-                Self::action_button(
-                    "Send Text",
-                    if self.permissions.input_simulation {
-                        Some(Message::SendInputText)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.input_simulation,
-                        "Input simulation permission is missing.",
-                    ),
-                ),
-            ]
-            .spacing(8),
-            row![
-                text("X"),
-                text_input("x", &self.click_x)
-                    .on_input(Message::ClickXChanged)
-                    .width(100),
-                text("Y"),
-                text_input("y", &self.click_y)
-                    .on_input(Message::ClickYChanged)
-                    .width(100),
-                Self::action_button(
-                    "Move Mouse",
-                    if self.permissions.input_simulation {
-                        Some(Message::MoveMouseToPoint)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.input_simulation,
-                        "Input simulation permission is missing.",
-                    ),
-                ),
-                Self::action_button(
-                    "Send Click",
-                    if self.permissions.input_simulation {
-                        Some(Message::SendMouseClick)
-                    } else {
-                        None
-                    },
-                    Self::required_permission_tooltip(
-                        self.permissions.input_simulation,
-                        "Input simulation permission is missing.",
-                    ),
-                ),
-            ]
-            .spacing(8),
-            click_button_selector,
-        ]
-        .spacing(8);
-
-        let screenshot_panel: Element<'_, Message> = if let Some(handle) = &self.screenshot {
-            iced_image::viewer(handle.clone())
-                .width(Length::Fill)
-                .height(Length::FillPortion(2))
-                .into()
-        } else {
-            container(text("No screenshot captured yet"))
-                .width(Length::Fill)
-                .height(180)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into()
-        };
-
-        let left_panel = column![
-            finder_controls,
-            search,
-            scrollable(window_list.spacing(4)).height(Length::Fill),
-        ]
-        .spacing(10)
-        .width(Length::FillPortion(2));
-
         let right_panel = column![
-            selected_info,
-            move_resize_controls,
-            screenshot_controls,
-            input_controls,
-            screenshot_panel,
+            Self::panel("Sections", self.section_tabs().into()),
+            self.selected_window_card(),
+            self.section_content(),
         ]
-        .spacing(10)
+        .spacing(SPACING_SM)
         .width(Length::FillPortion(3));
 
-        let root = column![
-            row![left_panel, right_panel]
-                .spacing(14)
-                .height(Length::Fill),
+        let status_panel = Self::panel(
+            "Status",
             row![
+                text(format!("{} {}", self.status_prefix(), self.status))
+                    .size(15)
+                    .width(Length::FillPortion(3)),
                 text(format!(
                     "Cursor: {}",
                     self.cursor_position
                         .map(|(x, y)| format!("{}, {}", x, y))
                         .unwrap_or_else(|| "unknown".to_string())
                 ))
-                .size(14),
-                text(&self.status).size(14),
-                button(text("Clear")).on_press(Message::ClearStatus),
+                .size(15)
+                .width(Length::FillPortion(2)),
+                button(text("Clear"))
+                    .on_press(Message::ClearStatus)
+                    .padding([7, 10]),
             ]
-            .spacing(12),
+            .spacing(SPACING_SM)
+            .align_y(iced::Alignment::Center)
+            .into(),
+        );
+
+        let root = column![
+            row![
+                container(left_panel).width(Length::FillPortion(2)),
+                right_panel
+            ]
+            .spacing(SPACING_MD)
+            .height(Length::Fill),
+            status_panel,
         ]
-        .padding(12)
-        .spacing(10)
+        .padding(PADDING_ROOT)
+        .spacing(SPACING_SM)
         .height(Length::Fill);
 
         container(root)

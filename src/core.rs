@@ -91,7 +91,7 @@ impl Core {
     pub fn cursor_position(&self) -> Result<(i32, i32)> {
         self.ensure(
             self.permissions.cursor_tracking,
-            "Cursor tracking is unavailable on this platform/session.",
+            "Cursor tracking is unavailable on this session.",
         )?;
 
         self.platform

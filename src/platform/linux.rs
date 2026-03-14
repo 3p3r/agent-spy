@@ -22,14 +22,31 @@ impl LinuxPlatform {
         let (conn, screen_num) = x11rb::connect(None)?;
         Ok((conn, screen_num))
     }
+
+    fn ensure_supported_session(&self) -> Result<()> {
+        if self.is_wayland {
+            bail!("Wayland sessions are not supported. Please use an X11 session.");
+        }
+
+        Ok(())
+    }
 }
 
 impl Platform for LinuxPlatform {
     fn check_permissions(&self) -> PermissionStatus {
+        if self.is_wayland {
+            return PermissionStatus {
+                screen_capture: false,
+                accessibility: false,
+                input_simulation: false,
+                cursor_tracking: false,
+            };
+        }
+
         let screen_capture = screenshots::Screen::all().is_ok();
         let input_simulation = Enigo::new(&Settings::default()).is_ok();
-        let cursor_tracking = !self.is_wayland;
-        let accessibility = !self.is_wayland;
+        let cursor_tracking = true;
+        let accessibility = true;
 
         PermissionStatus {
             screen_capture,
@@ -51,6 +68,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn list_windows(&self) -> Result<Vec<WindowInfo>> {
+        self.ensure_supported_session()?;
         let windows = x_win::get_open_windows().map_err(|error| anyhow!(error.to_string()))?;
 
         let mut results = Vec::with_capacity(windows.len());
@@ -74,6 +92,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn window_at_point(&self, x: i32, y: i32) -> Result<Option<WindowInfo>> {
+        self.ensure_supported_session()?;
         let mut candidates: Vec<WindowInfo> = self
             .list_windows()?
             .into_iter()
@@ -89,9 +108,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn focus_window(&self, id: u64) -> Result<()> {
-        if self.is_wayland {
-            bail!("Focusing windows is not supported on Wayland.");
-        }
+        self.ensure_supported_session()?;
 
         let (conn, _) = self.x11_connection()?;
         let window_id = u32::try_from(id).map_err(|_| anyhow!("Invalid window id"))?;
@@ -101,9 +118,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_position(&self, id: u64, x: i32, y: i32) -> Result<()> {
-        if self.is_wayland {
-            bail!("Moving windows is not supported on Wayland.");
-        }
+        self.ensure_supported_session()?;
 
         let (conn, _) = self.x11_connection()?;
         let window_id = u32::try_from(id).map_err(|_| anyhow!("Invalid window id"))?;
@@ -114,9 +129,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_size(&self, id: u64, width: u32, height: u32) -> Result<()> {
-        if self.is_wayland {
-            bail!("Resizing windows is not supported on Wayland.");
-        }
+        self.ensure_supported_session()?;
 
         let (conn, _) = self.x11_connection()?;
         let window_id = u32::try_from(id).map_err(|_| anyhow!("Invalid window id"))?;
@@ -127,9 +140,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn set_always_on_top(&self, id: u64, enabled: bool) -> Result<()> {
-        if self.is_wayland {
-            bail!("Setting always-on-top is not supported on Wayland.");
-        }
+        self.ensure_supported_session()?;
         let (conn, screen_num) = self.x11_connection()?;
         let root = conn
             .setup()

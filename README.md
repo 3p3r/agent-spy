@@ -4,6 +4,13 @@ WinSpy inspired tool for Agents - The last desktop automation tool your Agents n
 
 ![agent-spy](./demo.png)
 
+- [Build](#build)
+- [CLI Mode](#cli-mode)
+- [Permissions](#permissions)
+  - [Allow agents to access Windows](#allow-agents-to-access-windows)
+  - [Allow agents to access Mac](#allow-agents-to-access-mac)
+
+
 ## Build
 
 Use the package scripts to drive Cargo builds:
@@ -34,8 +41,14 @@ Examples:
 - `cargo run -- --cli capture-screen --output /tmp/screen.png`
 - `cargo run -- --cli capture-window 12345 --output /tmp/window.png`
 - `cargo run -- --cli send-text "hello from cli"`
+- `cargo run -- --cli key-down shift`
+- `cargo run -- --cli key-tap a --mod control`
 - `cargo run -- --cli move-mouse 500 300`
 - `cargo run -- --cli click 500 300 --button left`
+- `cargo run -- --cli mouse-down 500 300 --button left`
+- `cargo run -- --cli mouse-up 500 300 --button left`
+- `cargo run -- --cli drag 500 300 700 450 --button left`
+- `cargo run -- --cli scroll -3 --axis vertical`
 - `cargo run -- --cli check-permissions`
 
 Commands:
@@ -51,8 +64,15 @@ Commands:
 - `capture-screen --output <path>`
 - `capture-window <id> --output <path>`
 - `send-text <text>`
+- `key-down <key>`
+- `key-up <key>`
+- `key-tap <key> [--mod <shift|control|alt|meta>]...`
 - `move-mouse <x> <y>`
 - `click <x> <y> [--button <left|right|middle>]`
+- `mouse-down <x> <y> [--button <left|right|middle>]`
+- `mouse-up <x> <y> [--button <left|right|middle>]`
+- `drag <start_x> <start_y> <end_x> <end_y> [--button <left|right|middle>]`
+- `scroll <amount> [--axis <vertical|horizontal>]`
 - `check-permissions`
 - `version`
 
@@ -61,6 +81,23 @@ Notes:
 - `capture-screen` and `capture-window` require `--output`.
 - Commands that manipulate windows require accessibility support.
 - Input simulation commands require input simulation support.
-- Linux GUI/CLI automation support is X11-only.
-- Wayland sessions are intentionally unsupported; run `agent-spy` in an X11 session.
+- Named keys supported by the low-level CLI include modifiers, arrows, enter, escape, tab, space, delete, home/end, page up/down, and `f1` through `f12`. Single-character keys are also supported.
+- Linux input injection prefers native X11 XTest when available and falls back to Enigo.
+- Wayland sessions are supported for input simulation when Enigo can access the session; window-management features remain X11-only.
 Patch scripts require `cargo patch-crate` (`cargo install patch-crate`).
+
+## Permissions
+
+### Allow agents to access Windows
+
+UIPI is a security measure that "prevents processes with a lower "integrity level" (IL) from sending messages to higher IL processes". If your program does not have elevated privileges, you won't be able to use this program in some situations. It won't be possible to use it with the task manager for example. Run this program as an admin, if you need to use it with processes with a higher "integrity level".
+
+### Allow agents to access Mac
+
+When a third-party app tries to access and control your Mac through accessibility features, you receive an alert, and you must specifically grant the app access to your Mac in Privacy & Security settings.
+
+If you’re familiar with an app, you can authorize it by clicking Open System Settings in the alert, then turning on permission for the app in Privacy & Security settings. If you’re unfamiliar with an app or you don’t want to give it access to your Mac at that time, click Deny in the alert.
+
+Be cautious and grant access only to apps that you know and trust. If you give apps access to your Mac, you also give them access to your contact, calendar, and other information, and are subject to their terms and privacy policies, and not the Apple Privacy Policy. Be sure to review an app’s terms and privacy policy to understand how it treats and uses your information.
+
+To review app permissions—for example, if you later decide to give a denied app access to your Mac—choose Apple menu > System Settings, click Privacy & Security in the sidebar, then click Accessibility on the right. (You may need to scroll down.) Turn permission on or off for any app in the list. If you don’t see the app you want to grant permissions for, click the Add button at the bottom of the list of apps, search for the app, select it, then click Open.

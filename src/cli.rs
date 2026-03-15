@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
-use crate::core::{Core, MouseButtonArg};
+use crate::core::{Core, KeyArg, ModifierKey, MouseButtonArg, ScrollAxisArg};
 use crate::platform::WindowInfo;
 
 pub fn run_from_args(args: Vec<String>) -> i32 {
@@ -103,35 +103,82 @@ fn run(args: Vec<String>) -> Result<String> {
             core.click_mouse(x, y, button.into())?;
             Ok(format!("Clicked at ({x}, {y})."))
         }
+        CliCommand::MouseDown { x, y, button } => {
+            core.mouse_down(x, y, button.into())?;
+            Ok(format!(
+                "Pressed {} mouse button at ({x}, {y}).",
+                button.label()
+            ))
+        }
+        CliCommand::MouseUp { x, y, button } => {
+            core.mouse_up(x, y, button.into())?;
+            Ok(format!(
+                "Released {} mouse button at ({x}, {y}).",
+                button.label()
+            ))
+        }
+        CliCommand::Drag {
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            button,
+        } => {
+            core.drag_mouse(start_x, start_y, end_x, end_y, button.into())?;
+            Ok(format!(
+                "Dragged {} mouse button from ({start_x}, {start_y}) to ({end_x}, {end_y}).",
+                button.label()
+            ))
+        }
+        CliCommand::Scroll { amount, axis } => {
+            core.scroll(amount, axis.into())?;
+            Ok(format!("Scrolled {} {}.", axis.label(), amount))
+        }
+        CliCommand::KeyDown { key } => {
+            let key = KeyArg::parse(&key)?;
+            core.key_down(key)?;
+            Ok("Pressed key.".to_string())
+        }
+        CliCommand::KeyUp { key } => {
+            let key = KeyArg::parse(&key)?;
+            core.key_up(key)?;
+            Ok("Released key.".to_string())
+        }
+        CliCommand::KeyTap { key, modifiers } => {
+            let key = KeyArg::parse(&key)?;
+            let modifiers = modifiers
+                .into_iter()
+                .map(ModifierKey::from)
+                .collect::<Vec<_>>();
+            core.key_tap(key, &modifiers)?;
+            Ok("Tapped key.".to_string())
+        }
         CliCommand::CheckPermissions => {
             let permissions = core.permissions();
+            let modifiers = core.modifier_state();
             let mut output = format!(
-                "screen_capture={}\naccessibility={}\ninput_simulation={}\ncursor_tracking={}",
+                "screen_capture={}\naccessibility={}\ninput_simulation={}\ncursor_tracking={}\ninput_backend={}\nmod_shift={}\nmod_control={}\nmod_alt={}\nmod_meta={}",
                 permissions.screen_capture,
                 permissions.accessibility,
                 permissions.input_simulation,
-                permissions.cursor_tracking
+                permissions.cursor_tracking,
+                core.input_backend_name(),
+                modifiers.shift,
+                modifiers.control,
+                modifiers.alt,
+                modifiers.meta
             );
 
-            if cfg!(target_os = "linux") && is_wayland_session() {
-                output.push_str(
-                    "\nsession_supported=false\nreason=Wayland sessions are unsupported; use X11.",
-                );
-            } else {
-                output.push_str("\nsession_supported=true");
-            }
+            let supported = permissions.screen_capture
+                || permissions.accessibility
+                || permissions.input_simulation
+                || permissions.cursor_tracking;
+            output.push_str(&format!("\nsession_supported={supported}"));
 
             Ok(output)
         }
         CliCommand::Version => Ok(format!("agent-spy {}", env!("CARGO_PKG_VERSION"))),
     }
-}
-
-fn is_wayland_session() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|value| value.eq_ignore_ascii_case("wayland"))
-            .unwrap_or(false)
 }
 
 #[derive(Debug, Parser)]
@@ -197,6 +244,42 @@ enum CliCommand {
         #[arg(long, value_enum, default_value_t = ButtonChoice::Left)]
         button: ButtonChoice,
     },
+    MouseDown {
+        x: i32,
+        y: i32,
+        #[arg(long, value_enum, default_value_t = ButtonChoice::Left)]
+        button: ButtonChoice,
+    },
+    MouseUp {
+        x: i32,
+        y: i32,
+        #[arg(long, value_enum, default_value_t = ButtonChoice::Left)]
+        button: ButtonChoice,
+    },
+    Drag {
+        start_x: i32,
+        start_y: i32,
+        end_x: i32,
+        end_y: i32,
+        #[arg(long, value_enum, default_value_t = ButtonChoice::Left)]
+        button: ButtonChoice,
+    },
+    Scroll {
+        amount: i32,
+        #[arg(long, value_enum, default_value_t = ScrollAxisChoice::Vertical)]
+        axis: ScrollAxisChoice,
+    },
+    KeyDown {
+        key: String,
+    },
+    KeyUp {
+        key: String,
+    },
+    KeyTap {
+        key: String,
+        #[arg(long = "mod", value_enum)]
+        modifiers: Vec<ModifierChoice>,
+    },
     CheckPermissions,
     Version,
 }
@@ -214,12 +297,65 @@ enum ButtonChoice {
     Middle,
 }
 
+impl ButtonChoice {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Middle => "middle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ModifierChoice {
+    Shift,
+    Control,
+    Alt,
+    Meta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ScrollAxisChoice {
+    Vertical,
+    Horizontal,
+}
+
+impl ScrollAxisChoice {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Vertical => "vertically",
+            Self::Horizontal => "horizontally",
+        }
+    }
+}
+
 impl From<ButtonChoice> for MouseButtonArg {
     fn from(value: ButtonChoice) -> Self {
         match value {
             ButtonChoice::Left => Self::Left,
             ButtonChoice::Right => Self::Right,
             ButtonChoice::Middle => Self::Middle,
+        }
+    }
+}
+
+impl From<ModifierChoice> for ModifierKey {
+    fn from(value: ModifierChoice) -> Self {
+        match value {
+            ModifierChoice::Shift => Self::Shift,
+            ModifierChoice::Control => Self::Control,
+            ModifierChoice::Alt => Self::Alt,
+            ModifierChoice::Meta => Self::Meta,
+        }
+    }
+}
+
+impl From<ScrollAxisChoice> for ScrollAxisArg {
+    fn from(value: ScrollAxisChoice) -> Self {
+        match value {
+            ScrollAxisChoice::Vertical => Self::Vertical,
+            ScrollAxisChoice::Horizontal => Self::Horizontal,
         }
     }
 }
@@ -273,7 +409,7 @@ fn format_window(window: &WindowInfo) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ButtonChoice, CliArgs, CliCommand, OnOff};
+    use super::{ButtonChoice, CliArgs, CliCommand, ModifierChoice, OnOff, ScrollAxisChoice};
     use clap::Parser;
 
     #[test]
@@ -323,6 +459,45 @@ mod tests {
         match args.command.unwrap() {
             CliCommand::Version => {}
             _ => panic!("expected version command"),
+        }
+    }
+
+    #[test]
+    fn parse_key_tap_with_modifiers() {
+        let args = CliArgs::try_parse_from([
+            "agent-spy",
+            "--cli",
+            "key-tap",
+            "a",
+            "--mod",
+            "shift",
+            "--mod",
+            "control",
+        ])
+        .unwrap();
+
+        match args.command.unwrap() {
+            CliCommand::KeyTap { key, modifiers } => {
+                assert_eq!(key, "a");
+                assert_eq!(
+                    modifiers,
+                    vec![ModifierChoice::Shift, ModifierChoice::Control]
+                );
+            }
+            _ => panic!("expected key-tap command"),
+        }
+    }
+
+    #[test]
+    fn parse_scroll_defaults_to_vertical() {
+        let args = CliArgs::try_parse_from(["agent-spy", "--cli", "scroll", "3"]).unwrap();
+
+        match args.command.unwrap() {
+            CliCommand::Scroll { amount, axis } => {
+                assert_eq!(amount, 3);
+                assert!(matches!(axis, ScrollAxisChoice::Vertical));
+            }
+            _ => panic!("expected scroll command"),
         }
     }
 }

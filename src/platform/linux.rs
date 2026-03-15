@@ -34,19 +34,10 @@ impl LinuxPlatform {
 
 impl Platform for LinuxPlatform {
     fn check_permissions(&self) -> PermissionStatus {
-        if self.is_wayland {
-            return PermissionStatus {
-                screen_capture: false,
-                accessibility: false,
-                input_simulation: false,
-                cursor_tracking: false,
-            };
-        }
-
         let screen_capture = screenshots::Screen::all().is_ok();
         let input_simulation = Enigo::new(&Settings::default()).is_ok();
-        let cursor_tracking = true;
-        let accessibility = true;
+        let cursor_tracking = !self.is_wayland;
+        let accessibility = !self.is_wayland;
 
         PermissionStatus {
             screen_capture,

@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use iced::widget::image::{self as iced_image, Handle};
 use iced::widget::{
     Column, Row, button, column, container, row, scrollable, text, text_input, tooltip,
 };
 use iced::{Element, Length, Size, Subscription, Task, window};
 
+use crate::core::{Core, MouseButtonArg};
 use crate::message::{AppSection, Message, MouseButtonChoice};
 use crate::platform::{PermissionStatus, Platform, WindowInfo, create_platform};
 
@@ -17,6 +17,11 @@ const PADDING_CARD: u16 = 12;
 const SPACING_XS: u32 = 6;
 const SPACING_SM: u32 = 10;
 const SPACING_MD: u32 = 14;
+const PANEL_TITLE_SIZE: u32 = 16;
+const STATUS_TEXT_SIZE: u32 = 14;
+const AUTO_REFRESH_INTERVAL_MS: u64 = 2000;
+const TRACK_INTERVAL_MS: u64 = 100;
+const INPUT_FOCUS_SETTLE_MS: u64 = 80;
 
 #[derive(Debug, Clone, Copy)]
 enum StatusTone {
@@ -27,6 +32,7 @@ enum StatusTone {
 }
 
 pub struct AgentSpy {
+    core: Core,
     platform: Box<dyn Platform>,
     permissions: PermissionStatus,
     windows: Vec<WindowInfo>,
@@ -37,7 +43,6 @@ pub struct AgentSpy {
     status: String,
     status_tone: StatusTone,
     screenshot: Option<Handle>,
-    enigo: Option<Enigo>,
     move_x: String,
     move_y: String,
     size_w: String,
@@ -52,15 +57,12 @@ pub struct AgentSpy {
 
 impl AgentSpy {
     fn new() -> Self {
+        let core = Core::new();
         let platform = create_platform();
-        let permissions = platform.check_permissions();
-        let enigo = if permissions.input_simulation {
-            Enigo::new(&Settings::default()).ok()
-        } else {
-            None
-        };
+        let permissions = core.permissions().clone();
 
         let mut app = Self {
+            core,
             platform,
             permissions,
             windows: Vec::new(),
@@ -71,7 +73,6 @@ impl AgentSpy {
             status: String::new(),
             status_tone: StatusTone::Info,
             screenshot: None,
-            enigo,
             move_x: String::new(),
             move_y: String::new(),
             size_w: String::new(),
@@ -90,13 +91,6 @@ impl AgentSpy {
     }
 
     fn set_startup_status(&mut self) {
-        if Self::is_linux_wayland_session() {
-            self.status =
-                "Wayland sessions are unsupported. Start the app in an X11 session.".to_string();
-            self.status_tone = StatusTone::Warning;
-            return;
-        }
-
         let mut missing = Vec::new();
 
         if !self.permissions.screen_capture {
@@ -121,21 +115,6 @@ impl AgentSpy {
                 missing.join(", ")
             );
             self.status_tone = StatusTone::Warning;
-        }
-    }
-
-    fn is_linux_wayland_session() -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            std::env::var_os("WAYLAND_DISPLAY").is_some()
-                || std::env::var("XDG_SESSION_TYPE")
-                    .map(|value| value.eq_ignore_ascii_case("wayland"))
-                    .unwrap_or(false)
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
         }
     }
 
@@ -223,6 +202,14 @@ impl AgentSpy {
         self.status_tone = StatusTone::Error;
     }
 
+    fn selected_mouse_button(&self) -> MouseButtonArg {
+        match self.click_button {
+            MouseButtonChoice::Left => MouseButtonArg::Left,
+            MouseButtonChoice::Right => MouseButtonArg::Right,
+            MouseButtonChoice::Middle => MouseButtonArg::Middle,
+        }
+    }
+
     fn status_prefix(&self) -> &'static str {
         match self.status_tone {
             StatusTone::Info => "ℹ",
@@ -234,7 +221,7 @@ impl AgentSpy {
 
     fn panel<'a>(title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
         container(
-            column![text(title).size(18), body]
+            column![text(title).size(PANEL_TITLE_SIZE), body]
                 .spacing(SPACING_SM)
                 .width(Length::Fill),
         )
@@ -631,6 +618,8 @@ impl AgentSpy {
                             }
                         }
                     }
+                } else {
+                    self.refresh_windows();
                 }
             }
             Message::FocusSelected => {
@@ -824,14 +813,27 @@ impl AgentSpy {
                     return Task::none();
                 }
 
-                if let Some(enigo) = self.enigo.as_mut() {
-                    match enigo.text(&self.input_text) {
-                        Ok(()) => {
-                            self.set_status_success("Sent keyboard text.");
-                        }
-                        Err(error) => {
-                            self.set_status_error(format!("Sending text failed: {error}"));
-                        }
+                if self.input_text.trim().is_empty() {
+                    self.set_status_warning("Enter text before sending.");
+                    return Task::none();
+                }
+
+                if let Some(window_id) = self.selected_window_id
+                    && self.permissions.accessibility
+                {
+                    if let Err(error) = self.platform.focus_window(window_id) {
+                        self.set_status_error(format!("Focus failed before text input: {error}"));
+                        return Task::none();
+                    }
+                    std::thread::sleep(Duration::from_millis(INPUT_FOCUS_SETTLE_MS));
+                }
+
+                match self.core.send_text(&self.input_text) {
+                    Ok(()) => {
+                        self.set_status_success("Sent keyboard text.");
+                    }
+                    Err(error) => {
+                        self.set_status_error(format!("Sending text failed: {error}"));
                     }
                 }
             }
@@ -858,25 +860,15 @@ impl AgentSpy {
                     }
                 };
 
-                if let Some(enigo) = self.enigo.as_mut() {
-                    let button = match self.click_button {
-                        MouseButtonChoice::Left => Button::Left,
-                        MouseButtonChoice::Right => Button::Right,
-                        MouseButtonChoice::Middle => Button::Middle,
-                    };
-
-                    let move_result = enigo.move_mouse(x, y, Coordinate::Abs);
-                    let click_result = enigo.button(button, Direction::Click);
-                    match (move_result, click_result) {
-                        (Ok(()), Ok(())) => {
-                            self.set_status_success(format!(
-                                "Mouse click sent at ({x}, {y}) with {} button.",
-                                self.click_button.label()
-                            ));
-                        }
-                        (Err(error), _) | (_, Err(error)) => {
-                            self.set_status_error(format!("Mouse click failed: {error}"));
-                        }
+                match self.core.click_mouse(x, y, self.selected_mouse_button()) {
+                    Ok(()) => {
+                        self.set_status_success(format!(
+                            "Mouse click sent at ({x}, {y}) with {} button.",
+                            self.click_button.label()
+                        ));
+                    }
+                    Err(error) => {
+                        self.set_status_error(format!("Mouse click failed: {error}"));
                     }
                 }
             }
@@ -900,14 +892,12 @@ impl AgentSpy {
                     }
                 };
 
-                if let Some(enigo) = self.enigo.as_mut() {
-                    match enigo.move_mouse(x, y, Coordinate::Abs) {
-                        Ok(()) => {
-                            self.set_status_success(format!("Moved mouse to ({x}, {y})."));
-                        }
-                        Err(error) => {
-                            self.set_status_error(format!("Mouse move failed: {error}"));
-                        }
+                match self.core.move_mouse(x, y) {
+                    Ok(()) => {
+                        self.set_status_success(format!("Moved mouse to ({x}, {y})."));
+                    }
+                    Err(error) => {
+                        self.set_status_error(format!("Mouse move failed: {error}"));
                     }
                 }
             }
@@ -922,9 +912,10 @@ impl AgentSpy {
 
     fn subscription(&self) -> Subscription<Message> {
         if self.track_mouse && self.permissions.cursor_tracking {
-            iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick)
+            iced::time::every(Duration::from_millis(TRACK_INTERVAL_MS)).map(|_| Message::Tick)
         } else {
-            Subscription::none()
+            iced::time::every(Duration::from_millis(AUTO_REFRESH_INTERVAL_MS))
+                .map(|_| Message::Tick)
         }
     }
 
@@ -1019,7 +1010,7 @@ impl AgentSpy {
             "Status",
             row![
                 text(format!("{} {}", self.status_prefix(), self.status))
-                    .size(15)
+                    .size(STATUS_TEXT_SIZE)
                     .width(Length::FillPortion(3)),
                 text(format!(
                     "Cursor: {}",
@@ -1027,7 +1018,7 @@ impl AgentSpy {
                         .map(|(x, y)| format!("{}, {}", x, y))
                         .unwrap_or_else(|| "unknown".to_string())
                 ))
-                .size(15)
+                .size(STATUS_TEXT_SIZE)
                 .width(Length::FillPortion(2)),
                 button(text("Clear"))
                     .on_press(Message::ClearStatus)

@@ -5,12 +5,144 @@ pub struct WindowInfo {
     pub id: u64,
     pub title: String,
     pub pid: u32,
+    pub process_name: String,
+    pub exec_name: String,
+    pub process_path: String,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
     pub is_minimized: bool,
     pub is_maximized: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserInfo {
+    pub name: &'static str,
+    pub executable_path: String,
+}
+
+struct BrowserMatcher {
+    name: &'static str,
+    title_suffixes: &'static [&'static str],
+    exec_tokens: &'static [&'static str],
+}
+
+const BROWSER_MATCHERS: &[BrowserMatcher] = &[
+    BrowserMatcher {
+        name: "Google Chrome",
+        title_suffixes: &["google chrome", "chrome"],
+        exec_tokens: &[
+            "google-chrome",
+            "google-chrome-stable",
+            "google chrome",
+            "chrome",
+        ],
+    },
+    BrowserMatcher {
+        name: "Chromium",
+        title_suffixes: &["chromium"],
+        exec_tokens: &["chromium", "chromium-browser"],
+    },
+    BrowserMatcher {
+        name: "Mozilla Firefox",
+        title_suffixes: &["mozilla firefox", "firefox"],
+        exec_tokens: &["firefox", "firefox-bin"],
+    },
+    BrowserMatcher {
+        name: "Brave",
+        title_suffixes: &["brave"],
+        exec_tokens: &["brave", "brave-browser"],
+    },
+    BrowserMatcher {
+        name: "Microsoft Edge",
+        title_suffixes: &["microsoft edge", "edge"],
+        exec_tokens: &["msedge", "microsoft-edge", "microsoft edge"],
+    },
+    BrowserMatcher {
+        name: "Safari",
+        title_suffixes: &["safari"],
+        exec_tokens: &["safari"],
+    },
+    BrowserMatcher {
+        name: "Opera",
+        title_suffixes: &["opera"],
+        exec_tokens: &["opera", "opera-stable"],
+    },
+    BrowserMatcher {
+        name: "Vivaldi",
+        title_suffixes: &["vivaldi"],
+        exec_tokens: &["vivaldi"],
+    },
+    BrowserMatcher {
+        name: "Arc",
+        title_suffixes: &["arc"],
+        exec_tokens: &["arc"],
+    },
+];
+
+fn title_matches_browser(title: &str, suffixes: &[&str]) -> bool {
+    let lower = title.trim().to_ascii_lowercase();
+    suffixes.iter().any(|suffix| {
+        lower == *suffix
+            || lower.ends_with(&format!(" - {suffix}"))
+            || lower.ends_with(&format!(" — {suffix}"))
+            || lower.ends_with(&format!(" | {suffix}"))
+    })
+}
+
+fn normalize_browser_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+}
+
+fn matches_browser_tokens(value: &str, tokens: &[&str]) -> bool {
+    let normalized = normalize_browser_text(value);
+    tokens.iter().any(|token| normalized.contains(token))
+}
+
+pub fn detect_browser(window: &WindowInfo) -> Option<BrowserInfo> {
+    let title = window.title.trim();
+    if !title.is_empty() {
+        for matcher in BROWSER_MATCHERS {
+            if title_matches_browser(title, matcher.title_suffixes) {
+                return Some(BrowserInfo {
+                    name: matcher.name,
+                    executable_path: window.process_path.clone(),
+                });
+            }
+        }
+    }
+
+    for matcher in BROWSER_MATCHERS {
+        if matches_browser_tokens(&window.exec_name, matcher.exec_tokens) {
+            return Some(BrowserInfo {
+                name: matcher.name,
+                executable_path: window.process_path.clone(),
+            });
+        }
+    }
+
+    for matcher in BROWSER_MATCHERS {
+        if matches_browser_tokens(&window.process_name, matcher.exec_tokens)
+            || matches_browser_tokens(&window.process_path, matcher.exec_tokens)
+        {
+            return Some(BrowserInfo {
+                name: matcher.name,
+                executable_path: window.process_path.clone(),
+            });
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Default)]

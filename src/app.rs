@@ -11,7 +11,7 @@ use crate::core::{Core, MouseButtonArg};
 use crate::message::{AppSection, MouseButtonChoice};
 use crate::modes::{ModeType, Rect};
 use crate::overlay::OverlayState;
-use crate::platform::{PermissionStatus, Platform, WindowInfo, create_platform};
+use crate::platform::{PermissionStatus, Platform, WindowInfo, create_platform, detect_browser};
 
 const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 600.0;
@@ -215,6 +215,10 @@ impl AgentSpyApp {
     fn selected_window(&self) -> Option<&WindowInfo> {
         let selected_id = self.selected_window_id?;
         self.windows.iter().find(|window| window.id == selected_id)
+    }
+
+    fn has_selected_browser(&self) -> bool {
+        self.selected_window().and_then(detect_browser).is_some()
     }
 
     fn selected_window_mutate_fields(&mut self, window: &WindowInfo) {
@@ -805,10 +809,15 @@ impl AgentSpyApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let has_browser = self.has_selected_browser();
+            if !has_browser && self.active_section == AppSection::Browser {
+                self.active_section = AppSection::Overview;
+            }
+
             card(ui, "Sections", |ui| {
                 ui.horizontal(|ui| {
-                    for section in AppSection::ALL {
-                        ui.selectable_value(&mut self.active_section, section, section.label());
+                    for section in AppSection::visible_sections(has_browser) {
+                        ui.selectable_value(&mut self.active_section, *section, section.label());
                     }
                 });
             });
@@ -835,6 +844,7 @@ impl AgentSpyApp {
             match self.active_section {
                 AppSection::Overview => self.ui_overview(ui, ctx),
                 AppSection::Window => self.ui_window(ui),
+                AppSection::Browser => self.ui_browser(ui),
                 AppSection::Capture => self.ui_capture(ui, ctx),
                 AppSection::Input => self.ui_input(ui),
             }
@@ -929,6 +939,25 @@ impl AgentSpyApp {
                     self.toggle_always_on_top();
                 }
             });
+        });
+    }
+
+    fn ui_browser(&mut self, ui: &mut egui::Ui) {
+        card(ui, "Browser", |ui| {
+            if let Some(window) = self.selected_window() {
+                if let Some(browser) = detect_browser(window) {
+                    ui.label(format!("Detected: {}", browser.name));
+                    if browser.executable_path.is_empty() {
+                        ui.label("Executable: unavailable");
+                    } else {
+                        ui.label(format!("Executable: {}", browser.executable_path));
+                    }
+                } else {
+                    ui.label("No browser detected for the selected window");
+                }
+            } else {
+                ui.label("No window selected");
+            }
         });
     }
 

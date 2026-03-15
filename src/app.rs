@@ -491,6 +491,31 @@ impl AgentSpyApp {
         }
     }
 
+    fn save_overlay_screenshot(&mut self) {
+        let Some(state) = &self.overlay_state else {
+            return;
+        };
+        let viewport = state.viewport;
+        let capture = screenshots::Screen::from_point(viewport.x, viewport.y)
+            .and_then(|screen| screen.capture());
+        match capture {
+            Ok(image) => {
+                let (w, h) = (image.width() as usize, image.height() as usize);
+                let rgba = image.into_raw();
+                let img_data = arboard::ImageData {
+                    width: w,
+                    height: h,
+                    bytes: rgba.into(),
+                };
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_image(img_data)) {
+                    Ok(()) => self.set_status_success("Overlay screenshot copied to clipboard."),
+                    Err(e) => self.set_status_error(format!("Clipboard copy failed: {e}")),
+                }
+            }
+            Err(e) => self.set_status_error(format!("Overlay screenshot failed: {e}")),
+        }
+    }
+
     fn focus_selected(&mut self) {
         if !self.permissions.accessibility {
             return;
@@ -1012,12 +1037,16 @@ impl AgentSpyApp {
             ));
 
             ui.label("Equivalent command");
-            ui.add_sized(
+            let cmd_response = ui.add_sized(
                 [ui.available_width(), 68.0],
                 egui::TextEdit::multiline(&mut self.recorded_macro_command)
-                    .interactive(false)
+                    .interactive(true)
                     .desired_rows(3),
             );
+            if cmd_response.clicked() && !self.recorded_macro_command.is_empty() {
+                ui.ctx().copy_text(self.recorded_macro_command.clone());
+                self.set_status_success("Copied command to clipboard.");
+            }
         });
     }
 
@@ -1031,6 +1060,7 @@ impl AgentSpyApp {
         let mut overlay_alt_down = false;
         let mut cycle_mode = false;
         let mut selected_point = None;
+        let mut save_screenshot = false;
 
         ctx.show_viewport_immediate(
             self.overlay_viewport_id,
@@ -1072,14 +1102,19 @@ impl AgentSpyApp {
 
                         paint_overlay(&painter, rect.min, &snapshot);
 
-                        let (primary_released, secondary_released, latest_pos) =
+                        let (primary_released, secondary_released, latest_pos, s_pressed) =
                             overlay_ctx.input(|i| {
                                 (
                                     i.pointer.button_released(egui::PointerButton::Primary),
                                     i.pointer.button_released(egui::PointerButton::Secondary),
                                     i.pointer.latest_pos(),
+                                    i.key_pressed(egui::Key::S),
                                 )
                             });
+
+                        if s_pressed {
+                            save_screenshot = true;
+                        }
 
                         if secondary_released || response.secondary_clicked() {
                             cycle_mode = true;
@@ -1097,6 +1132,10 @@ impl AgentSpyApp {
                     });
             },
         );
+
+        if save_screenshot {
+            self.save_overlay_screenshot();
+        }
 
         if cycle_mode && let Some(state) = &mut self.overlay_state {
             let next = state.mode.next();

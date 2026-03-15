@@ -884,6 +884,7 @@ impl AgentSpyApp {
                     .clicked()
                 {
                     self.capture_screen(ctx);
+                    self.active_section = AppSection::Capture;
                 }
             });
         });

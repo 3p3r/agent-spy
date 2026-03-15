@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -897,8 +898,68 @@ impl Core {
             .with_context(|| format!("Failed to save screenshot to {}", output.display()))
     }
 
-    pub fn send_text(&mut self, text: &str) -> Result<()> {
-        self.input()?.text(text)
+    pub fn send_text(
+        &mut self,
+        text: &str,
+        target_window: Option<u64>,
+        allow_focus_swap_fallback: bool,
+        send_via_clipboard_paste: bool,
+    ) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        match (allow_focus_swap_fallback, send_via_clipboard_paste) {
+            (false, false) => {
+                if let Some(window_id) = target_window {
+                    return self
+                        .platform
+                        .send_text_to_window(window_id, text)
+                        .with_context(|| {
+                            format!(
+                                "Window-targeted text send failed for selected window {window_id}"
+                            )
+                        });
+                }
+
+                self.input()?.text(text)
+            }
+            (true, false) => {
+                if let Some(window_id) = target_window {
+                    return self.with_focus_swap(window_id, |core| {
+                        match core.platform.send_text_to_window(window_id, text) {
+                            Ok(()) => Ok(()),
+                            Err(_) => core.input()?.text(text),
+                        }
+                    });
+                }
+
+                self.input()?.text(text)
+            }
+            (false, true) => {
+                self.copy_to_clipboard(text)?;
+
+                if let Some(window_id) = target_window {
+                    return self
+                        .platform
+                        .send_paste_to_window(window_id)
+                        .with_context(|| {
+                            format!("Window-targeted paste failed for selected window {window_id}")
+                        });
+                }
+
+                self.send_paste_shortcut()
+            }
+            (true, true) => {
+                self.copy_to_clipboard(text)?;
+
+                if let Some(window_id) = target_window {
+                    return self.with_focus_swap(window_id, |core| core.send_paste_shortcut());
+                }
+
+                self.send_paste_shortcut()
+            }
+        }
     }
 
     pub fn move_mouse(&mut self, x: i32, y: i32) -> Result<()> {
@@ -978,6 +1039,44 @@ impl Core {
         } else {
             bail!(message.to_string())
         }
+    }
+
+    fn with_focus_swap<F>(&mut self, window_id: u64, action: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let previous_focus = self.platform.focused_window_id().ok().flatten();
+
+        self.focus_window(window_id)
+            .context("Focus-swap fallback failed before text input")?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = action(self);
+
+        std::thread::sleep(Duration::from_millis(20));
+        if let Some(previous_window_id) = previous_focus
+            && previous_window_id != window_id
+        {
+            let _ = self.focus_window(previous_window_id);
+        }
+
+        result
+    }
+
+    fn copy_to_clipboard(&self, text: &str) -> Result<()> {
+        let mut clipboard = arboard::Clipboard::new().context("Failed to open clipboard")?;
+        clipboard
+            .set_text(text.to_string())
+            .context("Failed to write clipboard text")
+    }
+
+    fn send_paste_shortcut(&mut self) -> Result<()> {
+        let modifier = if cfg!(target_os = "macos") {
+            ModifierKey::Meta
+        } else {
+            ModifierKey::Control
+        };
+        self.key_tap(KeyArg::Unicode('v'), &[modifier])
     }
 }
 

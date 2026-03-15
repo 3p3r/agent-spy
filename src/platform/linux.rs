@@ -1,7 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow, bail};
 use enigo::{Enigo, Settings};
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt, EventMask, InputFocus};
+use x11rb::protocol::xproto::{
+    ConfigureWindowAux, ConnectionExt, EventMask, InputFocus, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+    KeyButMask, KeyPressEvent, KeyReleaseEvent,
+};
 
 use crate::platform::{PermissionStatus, Platform, WindowInfo};
 
@@ -29,6 +34,48 @@ impl LinuxPlatform {
         }
 
         Ok(())
+    }
+
+    fn build_keycodes(
+        &self,
+        conn: &x11rb::rust_connection::RustConnection,
+    ) -> Result<HashMap<u32, u8>> {
+        let min = conn.setup().min_keycode;
+        let max = conn.setup().max_keycode;
+        let count = max.saturating_sub(min).saturating_add(1);
+        let mapping = conn.get_keyboard_mapping(min, count)?.reply()?;
+
+        let mut keycodes = HashMap::new();
+        for offset in 0..count {
+            let keycode = min.saturating_add(offset);
+            let start = usize::from(offset) * usize::from(mapping.keysyms_per_keycode);
+            let end = start + usize::from(mapping.keysyms_per_keycode);
+            for &keysym in &mapping.keysyms[start..end] {
+                if keysym != 0 {
+                    keycodes.entry(keysym).or_insert(keycode);
+                }
+            }
+        }
+
+        Ok(keycodes)
+    }
+
+    fn key_for_char(ch: char) -> Result<(u32, KeyButMask)> {
+        if ch == ' ' {
+            return Ok((u32::from(b' '), KeyButMask::default()));
+        }
+
+        if ch.is_ascii() {
+            let keysym = ch as u32;
+            let state = if ch.is_ascii_uppercase() {
+                KeyButMask::SHIFT
+            } else {
+                KeyButMask::default()
+            };
+            return Ok((keysym, state));
+        }
+
+        bail!("Only ASCII text and spaces are supported for Linux targeted text input.")
     }
 }
 
@@ -96,6 +143,175 @@ impl Platform for LinuxPlatform {
 
         candidates.sort_by_key(|window| window.width.saturating_mul(window.height));
         Ok(candidates.into_iter().next())
+    }
+
+    fn focused_window_id(&self) -> Result<Option<u64>> {
+        self.ensure_supported_session()?;
+
+        let (conn, _) = self.x11_connection()?;
+        let reply = conn.get_input_focus()?.reply()?;
+        let focus = reply.focus;
+        if focus == x11rb::NONE {
+            return Ok(None);
+        }
+
+        Ok(Some(focus as u64))
+    }
+
+    fn send_text_to_window(&self, id: u64, text: &str) -> Result<()> {
+        self.ensure_supported_session()?;
+
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        let target = u32::try_from(id).map_err(|_| anyhow!("Invalid window id"))?;
+        let (conn, screen_num) = self.x11_connection()?;
+        let root = conn
+            .setup()
+            .roots
+            .get(screen_num)
+            .ok_or_else(|| anyhow!("No X11 screen"))?
+            .root;
+        let keycodes = self.build_keycodes(&conn)?;
+
+        for ch in text.chars() {
+            let (keysym, state) = Self::key_for_char(ch)?;
+            let keycode = *keycodes
+                .get(&keysym)
+                .ok_or_else(|| anyhow!("No keycode mapping found for character '{ch}'"))?;
+
+            let press = KeyPressEvent {
+                response_type: KEY_PRESS_EVENT,
+                detail: keycode,
+                sequence: 0,
+                time: x11rb::CURRENT_TIME,
+                root,
+                event: target,
+                child: x11rb::NONE,
+                root_x: 0,
+                root_y: 0,
+                event_x: 0,
+                event_y: 0,
+                state,
+                same_screen: true,
+            };
+            let release = KeyReleaseEvent {
+                response_type: KEY_RELEASE_EVENT,
+                detail: keycode,
+                sequence: 0,
+                time: x11rb::CURRENT_TIME,
+                root,
+                event: target,
+                child: x11rb::NONE,
+                root_x: 0,
+                root_y: 0,
+                event_x: 0,
+                event_y: 0,
+                state,
+                same_screen: true,
+            };
+
+            conn.send_event(false, target, EventMask::KEY_PRESS, press)?;
+            conn.send_event(false, target, EventMask::KEY_RELEASE, release)?;
+        }
+
+        conn.flush()?;
+        Ok(())
+    }
+
+    fn send_paste_to_window(&self, id: u64) -> Result<()> {
+        self.ensure_supported_session()?;
+
+        let target = u32::try_from(id).map_err(|_| anyhow!("Invalid window id"))?;
+        let (conn, screen_num) = self.x11_connection()?;
+        let root = conn
+            .setup()
+            .roots
+            .get(screen_num)
+            .ok_or_else(|| anyhow!("No X11 screen"))?
+            .root;
+        let keycodes = self.build_keycodes(&conn)?;
+
+        let ctrl_keysym = if keycodes.contains_key(&0xffe3) {
+            0xffe3
+        } else {
+            0xffe4
+        };
+        let ctrl_keycode = *keycodes
+            .get(&ctrl_keysym)
+            .ok_or_else(|| anyhow!("No keycode mapping found for Control key"))?;
+        let v_keycode = *keycodes
+            .get(&(u32::from(b'v')))
+            .ok_or_else(|| anyhow!("No keycode mapping found for 'v' key"))?;
+
+        let ctrl_press = KeyPressEvent {
+            response_type: KEY_PRESS_EVENT,
+            detail: ctrl_keycode,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: target,
+            child: x11rb::NONE,
+            root_x: 0,
+            root_y: 0,
+            event_x: 0,
+            event_y: 0,
+            state: KeyButMask::default(),
+            same_screen: true,
+        };
+        let v_press = KeyPressEvent {
+            response_type: KEY_PRESS_EVENT,
+            detail: v_keycode,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: target,
+            child: x11rb::NONE,
+            root_x: 0,
+            root_y: 0,
+            event_x: 0,
+            event_y: 0,
+            state: KeyButMask::CONTROL,
+            same_screen: true,
+        };
+        let v_release = KeyReleaseEvent {
+            response_type: KEY_RELEASE_EVENT,
+            detail: v_keycode,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: target,
+            child: x11rb::NONE,
+            root_x: 0,
+            root_y: 0,
+            event_x: 0,
+            event_y: 0,
+            state: KeyButMask::CONTROL,
+            same_screen: true,
+        };
+        let ctrl_release = KeyReleaseEvent {
+            response_type: KEY_RELEASE_EVENT,
+            detail: ctrl_keycode,
+            sequence: 0,
+            time: x11rb::CURRENT_TIME,
+            root,
+            event: target,
+            child: x11rb::NONE,
+            root_x: 0,
+            root_y: 0,
+            event_x: 0,
+            event_y: 0,
+            state: KeyButMask::CONTROL,
+            same_screen: true,
+        };
+
+        conn.send_event(false, target, EventMask::KEY_PRESS, ctrl_press)?;
+        conn.send_event(false, target, EventMask::KEY_PRESS, v_press)?;
+        conn.send_event(false, target, EventMask::KEY_RELEASE, v_release)?;
+        conn.send_event(false, target, EventMask::KEY_RELEASE, ctrl_release)?;
+        conn.flush()?;
+        Ok(())
     }
 
     fn focus_window(&self, id: u64) -> Result<()> {

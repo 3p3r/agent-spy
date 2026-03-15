@@ -9,6 +9,7 @@ WinSpy inspired tool for Agents - The last desktop automation tool your Agents n
   - [Window Management](#window-management)
 - [Build](#build)
 - [CLI Mode](#cli-mode)
+- [Send Text Modes](#send-text-modes)
 - [Permissions](#permissions)
   - [Allow agents to access Windows](#allow-agents-to-access-windows)
   - [Allow agents to access Mac](#allow-agents-to-access-mac)
@@ -29,7 +30,40 @@ Capture the entire screen or a specific window. Screenshots are displayed inline
 
 Send text, move the mouse, and click at specific coordinates. Choose between left, right, and middle mouse buttons.
 
+The Input tab exposes two independent Send Text toggles:
+
+- **Use focus-swap mode**
+- **Use copy-paste mode**
+
+These toggles combine to produce 4 deterministic Send Text behaviors (same matrix on all platforms):
+
+| Focus-swap | Copy-paste | Behavior |
+|---|---|---|
+| Off | Off | Send keystrokes to selected window without focusing it. |
+| On | Off | Focus selected window, send keystrokes, then restore previous focus. |
+| Off | On | Copy text to clipboard, send paste command to selected window without focusing it. |
+| On | On | Copy text to clipboard, focus selected window, paste, then restore previous focus. |
+
+If no window is selected, Send Text is sent to the currently active/focused app.
+
 ![Send keys and input simulation](./docs/send-keys.png)
+
+## Send Text Modes
+
+### Platform behavior
+
+| Platform | Background Keystrokes (Off/Off) | Focus-swap Keystrokes (On/Off) | Background Paste (Off/On) | Focus-swap Paste (On/On) |
+|---|---|---|---|---|
+| Windows | ✅ | ✅ | ✅ | ✅ |
+| Linux (X11) | ✅* | ✅ | ✅ | ✅ |
+| macOS | ✅ | ✅ | ✅ | ✅ |
+
+\* Linux X11 background keystrokes currently support ASCII text and spaces. For full Unicode reliability, use copy-paste mode.
+
+### Notes
+
+- Linux window control and background targeting require X11. Wayland sessions can still use focused input through Enigo when supported by the session, but window-target features remain X11-only.
+- Background delivery may still be blocked by application-specific security/input models in some apps.
 
 ### Click Macro Recording & Overlay
 
@@ -115,7 +149,7 @@ Commands:
 - `always-on-top <id> <on|off>`
 - `capture-screen --output <path>`
 - `capture-window <id> --output <path>`
-- `send-text <text>`
+- `send-text [--window-id <id>] [--allow-focus-swap-fallback] <text>`
 - `key-down <key>`
 - `key-up <key>`
 - `key-tap <key> [--mod <shift|control|alt|meta>]...`

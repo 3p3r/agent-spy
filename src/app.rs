@@ -17,7 +17,6 @@ const WINDOW_WIDTH: f32 = 960.0;
 const WINDOW_HEIGHT: f32 = 600.0;
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_millis(2000);
 const TRACK_INTERVAL: Duration = Duration::from_millis(100);
-const INPUT_FOCUS_SETTLE: Duration = Duration::from_millis(80);
 
 fn even_bg() -> Color32 {
     Color32::from_rgba_unmultiplied(0, 3, 4, 48)
@@ -78,6 +77,8 @@ pub struct AgentSpyApp {
     size_h: String,
     always_on_top: bool,
     input_text: String,
+    allow_focus_swap_fallback: bool,
+    send_via_clipboard_paste: bool,
     click_x: String,
     click_y: String,
     click_button: MouseButtonChoice,
@@ -122,6 +123,8 @@ impl AgentSpyApp {
             size_h: String::new(),
             always_on_top: false,
             input_text: String::new(),
+            allow_focus_swap_fallback: false,
+            send_via_clipboard_paste: false,
             click_x: String::new(),
             click_y: String::new(),
             click_button: MouseButtonChoice::Left,
@@ -633,17 +636,12 @@ impl AgentSpyApp {
             return;
         }
 
-        if let Some(window_id) = self.selected_window_id
-            && self.permissions.accessibility
-        {
-            if let Err(error) = self.platform.focus_window(window_id) {
-                self.set_status_error(format!("Focus failed before text input: {error}"));
-                return;
-            }
-            std::thread::sleep(INPUT_FOCUS_SETTLE);
-        }
-
-        match self.core.send_text(&self.input_text) {
+        match self.core.send_text(
+            &self.input_text,
+            self.selected_window_id,
+            self.allow_focus_swap_fallback,
+            self.send_via_clipboard_paste,
+        ) {
             Ok(()) => self.set_status_success("Sent keyboard text."),
             Err(error) => self.set_status_error(format!("Sending text failed: {error}")),
         }
@@ -989,6 +987,10 @@ impl AgentSpyApp {
                     self.send_input_text();
                 }
             });
+
+            ui.checkbox(&mut self.allow_focus_swap_fallback, "Use focus-swap mode");
+
+            ui.checkbox(&mut self.send_via_clipboard_paste, "Use copy-paste mode");
 
             ui.horizontal(|ui| {
                 ui.label("X");

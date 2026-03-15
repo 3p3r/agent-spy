@@ -4,11 +4,17 @@ mod imp {
     use std::ptr::null_mut;
 
     use anyhow::{Result, anyhow};
-    use windows::Win32::Foundation::{HWND, POINT};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GA_ROOT, GetAncestor, GetCursorPos, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, WindowFromPoint,
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        MAPVK_VK_TO_VSC, MapVirtualKeyW, VkKeyScanW,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, GA_ROOT, GUITHREADINFO, GetAncestor, GetCursorPos, GetForegroundWindow,
+        GetGUIThreadInfo, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
+        IsChild, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
+        SetWindowPos, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_PASTE, WindowFromPoint,
+    };
+    use windows::core::PCWSTR;
 
     use crate::platform::{PermissionStatus, Platform, WindowInfo};
 
@@ -17,6 +23,170 @@ mod imp {
     impl WindowsPlatform {
         pub fn new() -> Self {
             Self
+        }
+
+        fn to_utf16_null(value: &str) -> Vec<u16> {
+            value.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        fn find_text_target(root: HWND) -> HWND {
+            if let Some(focused) = Self::focused_descendant(root) {
+                return focused;
+            }
+
+            let candidates = [
+                "Edit",
+                "RichEditD2DPT",
+                "RichEdit20W",
+                "RichEdit50W",
+                "Scintilla",
+            ];
+
+            for class_name in candidates {
+                if let Some(found) = Self::find_descendant_by_class(root, class_name, 5) {
+                    return found;
+                }
+            }
+
+            root
+        }
+
+        fn focused_descendant(root: HWND) -> Option<HWND> {
+            if root.0 == null_mut() {
+                return None;
+            }
+
+            let mut process_id = 0u32;
+            let thread_id = unsafe { GetWindowThreadProcessId(root, Some(&mut process_id)) };
+            if thread_id == 0 {
+                return None;
+            }
+
+            let mut info = GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() {
+                return None;
+            }
+
+            let focused = info.hwndFocus;
+            if focused.0 == null_mut() {
+                return None;
+            }
+
+            let is_descendant = unsafe { IsChild(root, focused).as_bool() };
+            if is_descendant || focused == root {
+                Some(focused)
+            } else {
+                None
+            }
+        }
+
+        fn key_lparam(vk: u16, keyup: bool) -> LPARAM {
+            let scan = unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) };
+            let mut value = 1u32 | (scan << 16);
+            if keyup {
+                value |= 1 << 30;
+                value |= 1 << 31;
+            }
+            LPARAM(value as isize)
+        }
+
+        fn send_utf16_unit(target: HWND, unit: u16) {
+            if unit <= 0x7f {
+                let vk_scan = unsafe { VkKeyScanW(unit) };
+                if vk_scan != -1 {
+                    let vk = (vk_scan as u16) & 0xff;
+                    let shift_state = ((vk_scan as u16) >> 8) & 0xff;
+
+                    if (shift_state & 0x01) != 0 {
+                        unsafe {
+                            SendMessageW(
+                                target,
+                                WM_KEYDOWN,
+                                WPARAM(0x10),
+                                Self::key_lparam(0x10, false),
+                            );
+                        }
+                    }
+
+                    unsafe {
+                        SendMessageW(
+                            target,
+                            WM_KEYDOWN,
+                            WPARAM(vk as usize),
+                            Self::key_lparam(vk, false),
+                        );
+                        SendMessageW(target, WM_CHAR, WPARAM(unit as usize), LPARAM(1));
+                        SendMessageW(
+                            target,
+                            WM_KEYUP,
+                            WPARAM(vk as usize),
+                            Self::key_lparam(vk, true),
+                        );
+                    }
+
+                    if (shift_state & 0x01) != 0 {
+                        unsafe {
+                            SendMessageW(
+                                target,
+                                WM_KEYUP,
+                                WPARAM(0x10),
+                                Self::key_lparam(0x10, true),
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+
+            unsafe {
+                SendMessageW(target, WM_CHAR, WPARAM(unit as usize), LPARAM(1));
+            }
+        }
+
+        fn find_descendant_by_class(root: HWND, class_name: &str, depth: u8) -> Option<HWND> {
+            if depth == 0 || root.0 == null_mut() {
+                return None;
+            }
+
+            let class_wide = Self::to_utf16_null(class_name);
+            let direct = unsafe {
+                FindWindowExW(
+                    root,
+                    HWND(null_mut()),
+                    PCWSTR(class_wide.as_ptr()),
+                    PCWSTR::null(),
+                )
+            }
+            .ok();
+            if let Some(found) = direct
+                && found.0 != null_mut()
+            {
+                return Some(found);
+            }
+
+            let mut child =
+                unsafe { FindWindowExW(root, HWND(null_mut()), PCWSTR::null(), PCWSTR::null()) }
+                    .ok();
+            while let Some(current_child) = child {
+                if current_child.0 == null_mut() {
+                    break;
+                }
+
+                if let Some(found) =
+                    Self::find_descendant_by_class(current_child, class_name, depth - 1)
+                {
+                    return Some(found);
+                }
+
+                child =
+                    unsafe { FindWindowExW(root, current_child, PCWSTR::null(), PCWSTR::null()) }
+                        .ok();
+            }
+
+            None
         }
     }
 
@@ -67,6 +237,44 @@ mod imp {
                 .list_windows()?
                 .into_iter()
                 .find(|window| window.id == root_id))
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>> {
+            let hwnd = unsafe { GetForegroundWindow() };
+            if hwnd.0 == null_mut() {
+                return Ok(None);
+            }
+
+            Ok(Some(hwnd.0 as usize as u64))
+        }
+
+        fn send_text_to_window(&self, id: u64, text: &str) -> Result<()> {
+            let hwnd = HWND(id as usize as *mut c_void);
+            if hwnd.0 == null_mut() {
+                return Err(anyhow!("Invalid window id"));
+            }
+
+            let target = WindowsPlatform::find_text_target(hwnd);
+
+            for unit in text.encode_utf16() {
+                Self::send_utf16_unit(target, unit);
+            }
+
+            Ok(())
+        }
+
+        fn send_paste_to_window(&self, id: u64) -> Result<()> {
+            let hwnd = HWND(id as usize as *mut c_void);
+            if hwnd.0 == null_mut() {
+                return Err(anyhow!("Invalid window id"));
+            }
+
+            let target = WindowsPlatform::find_text_target(hwnd);
+            unsafe {
+                SendMessageW(target, WM_PASTE, WPARAM(0), LPARAM(0));
+            }
+
+            Ok(())
         }
 
         fn focus_window(&self, id: u64) -> Result<()> {

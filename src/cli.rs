@@ -92,8 +92,12 @@ fn run(args: Vec<String>) -> Result<String> {
             core.capture_window_to_file(id, &output)?;
             Ok(format!("Captured window {id} to {}.", output.display()))
         }
-        CliCommand::SendText { text } => {
-            core.send_text(&text)?;
+        CliCommand::SendText {
+            text,
+            window_id,
+            allow_focus_swap_fallback,
+        } => {
+            core.send_text(&text, window_id, allow_focus_swap_fallback, false)?;
             Ok("Sent keyboard text.".to_string())
         }
         CliCommand::MoveMouse { x, y } => {
@@ -286,6 +290,10 @@ enum CliCommand {
         output: PathBuf,
     },
     SendText {
+        #[arg(long)]
+        window_id: Option<u64>,
+        #[arg(long)]
+        allow_focus_swap_fallback: bool,
         text: String,
     },
     MoveMouse {

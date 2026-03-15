@@ -24,11 +24,25 @@ mod imp {
     const KAX_VALUE_CG_SIZE_TYPE: i32 = 2;
     // CFStringEncoding: kCFStringEncodingUTF8 = 0x08000100
     const KCF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 1 << 20;
+    const KEYCODE_V: u16 = 9;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGEventCreate(source: *const c_void) -> *const c_void;
         fn CGEventGetLocation(event: *const c_void) -> CgPoint;
+        fn CGEventCreateKeyboardEvent(
+            source: *const c_void,
+            virtualKey: u16,
+            keyDown: bool,
+        ) -> *const c_void;
+        fn CGEventSetFlags(event: *const c_void, flags: u64);
+        fn CGEventKeyboardSetUnicodeString(
+            event: *const c_void,
+            stringLength: u64,
+            unicodeString: *const u16,
+        );
+        fn CGEventPostToPid(pid: i32, event: *const c_void);
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -141,6 +155,59 @@ mod imp {
                 .collect();
             candidates.sort_by_key(|w| w.width.saturating_mul(w.height));
             Ok(candidates.into_iter().next())
+        }
+
+        fn send_text_to_window(&self, id: u64, text: &str) -> Result<()> {
+            if text.is_empty() {
+                return Ok(());
+            }
+
+            let win = self.find_window(id)?;
+            let utf16: Vec<u16> = text.encode_utf16().collect();
+
+            unsafe {
+                let key_down = CGEventCreateKeyboardEvent(std::ptr::null(), 0, true);
+                if key_down.is_null() {
+                    bail!("Could not create macOS key-down event");
+                }
+                CGEventKeyboardSetUnicodeString(key_down, utf16.len() as u64, utf16.as_ptr());
+                CGEventPostToPid(win.pid as i32, key_down);
+                CFRelease(key_down);
+
+                let key_up = CGEventCreateKeyboardEvent(std::ptr::null(), 0, false);
+                if key_up.is_null() {
+                    bail!("Could not create macOS key-up event");
+                }
+                CGEventKeyboardSetUnicodeString(key_up, utf16.len() as u64, utf16.as_ptr());
+                CGEventPostToPid(win.pid as i32, key_up);
+                CFRelease(key_up);
+            }
+
+            Ok(())
+        }
+
+        fn send_paste_to_window(&self, id: u64) -> Result<()> {
+            let win = self.find_window(id)?;
+
+            unsafe {
+                let key_down = CGEventCreateKeyboardEvent(std::ptr::null(), KEYCODE_V, true);
+                if key_down.is_null() {
+                    bail!("Could not create macOS paste key-down event");
+                }
+                CGEventSetFlags(key_down, KCG_EVENT_FLAG_MASK_COMMAND);
+                CGEventPostToPid(win.pid as i32, key_down);
+                CFRelease(key_down);
+
+                let key_up = CGEventCreateKeyboardEvent(std::ptr::null(), KEYCODE_V, false);
+                if key_up.is_null() {
+                    bail!("Could not create macOS paste key-up event");
+                }
+                CGEventSetFlags(key_up, KCG_EVENT_FLAG_MASK_COMMAND);
+                CGEventPostToPid(win.pid as i32, key_up);
+                CFRelease(key_up);
+            }
+
+            Ok(())
         }
 
         fn focus_window(&self, id: u64) -> Result<()> {

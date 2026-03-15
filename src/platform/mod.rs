@@ -26,6 +26,15 @@ pub trait Platform: Send {
     fn cursor_position(&self) -> Option<(i32, i32)>;
     fn list_windows(&self) -> Result<Vec<WindowInfo>>;
     fn window_at_point(&self, x: i32, y: i32) -> Result<Option<WindowInfo>>;
+    fn focused_window_id(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    fn send_text_to_window(&self, _id: u64, _text: &str) -> Result<()> {
+        anyhow::bail!("Window-targeted text input is unavailable on this platform.")
+    }
+    fn send_paste_to_window(&self, _id: u64) -> Result<()> {
+        anyhow::bail!("Window-targeted paste is unavailable on this platform.")
+    }
     fn focus_window(&self, id: u64) -> Result<()>;
     fn set_position(&self, id: u64, x: i32, y: i32) -> Result<()>;
     fn set_size(&self, id: u64, width: u32, height: u32) -> Result<()>;

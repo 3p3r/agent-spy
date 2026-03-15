@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 use crate::core::{Core, KeyArg, ModifierKey, MouseButtonArg, ScrollAxisArg};
+use crate::modes::{ModeStep, ModeType, Rect, resolve_chain};
 use crate::platform::WindowInfo;
 
 pub fn run_from_args(args: Vec<String>) -> i32 {
@@ -178,6 +179,59 @@ fn run(args: Vec<String>) -> Result<String> {
             Ok(output)
         }
         CliCommand::Version => Ok(format!("agent-spy {}", env!("CARGO_PKG_VERSION"))),
+        CliCommand::SelectRegion {
+            bisect,
+            split_x,
+            split_y,
+            tile,
+            floating,
+            chain,
+            button,
+            dry_run,
+        } => {
+            let steps = parse_mode_steps(bisect, split_x, split_y, tile, floating, chain)?;
+            if steps.is_empty() {
+                bail!(
+                    "No mode steps provided. Use --bisect, --split-x, --split-y, --tile, --floating, or --chain."
+                );
+            }
+
+            let (cx, cy) = core.cursor_position()?;
+            let monitors = screenshots::Screen::all().map_err(|e| anyhow!("{e}"))?;
+            let monitor = monitors
+                .iter()
+                .find(|m| {
+                    let di = m.display_info;
+                    cx >= di.x
+                        && cy >= di.y
+                        && cx < di.x + di.width as i32
+                        && cy < di.y + di.height as i32
+                })
+                .or_else(|| monitors.first())
+                .ok_or_else(|| anyhow!("No monitors found"))?;
+
+            let di = monitor.display_info;
+            let initial = Rect {
+                x: di.x,
+                y: di.y,
+                w: di.width,
+                h: di.height,
+            };
+
+            let resolved = resolve_chain(initial, &steps)
+                .ok_or_else(|| anyhow!("Failed to resolve mode chain — invalid selection label"))?;
+            let (rx, ry) = resolved.center();
+
+            if dry_run {
+                Ok(format!(
+                    "x={} y={} w={} h={} center=({},{})",
+                    resolved.x, resolved.y, resolved.w, resolved.h, rx, ry
+                ))
+            } else {
+                core.click_mouse(rx, ry, button.into())?;
+                Ok(format!("Clicked at ({rx}, {ry})."))
+            }
+        }
     }
 }
 
@@ -282,6 +336,29 @@ enum CliCommand {
     },
     CheckPermissions,
     Version,
+    /// Chain region-selection modes and click the center of the resolved area.
+    /// Steps are applied in order: --bisect nw --split-x e  →  bisect(nw) then split-x(e).
+    SelectRegion {
+        #[arg(long, action = clap::ArgAction::Append)]
+        bisect: Vec<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        split_x: Vec<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        split_y: Vec<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        tile: Vec<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        floating: Vec<String>,
+        /// Raw step sequence: mode:selection pairs in order, e.g. "bisect:nw,split-x:e"
+        #[arg(long)]
+        chain: Option<String>,
+        /// Click button after resolving (default: left)
+        #[arg(long, value_enum, default_value_t = ButtonChoice::Left)]
+        button: ButtonChoice,
+        /// Only print the resolved region without clicking
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -358,6 +435,74 @@ impl From<ScrollAxisChoice> for ScrollAxisArg {
             ScrollAxisChoice::Horizontal => Self::Horizontal,
         }
     }
+}
+
+fn parse_mode_steps(
+    bisect: Vec<String>,
+    split_x: Vec<String>,
+    split_y: Vec<String>,
+    tile: Vec<String>,
+    floating: Vec<String>,
+    chain: Option<String>,
+) -> Result<Vec<ModeStep>> {
+    if let Some(chain_str) = chain {
+        return chain_str
+            .split(',')
+            .map(|s| {
+                let s = s.trim();
+                let (mode_str, sel) = s
+                    .split_once(':')
+                    .ok_or_else(|| anyhow!("Invalid chain step '{s}', expected mode:selection"))?;
+                let mode = match mode_str {
+                    "bisect" => ModeType::Bisect,
+                    "split" => ModeType::SplitX,
+                    "split-x" => ModeType::SplitX,
+                    "split-y" => ModeType::SplitY,
+                    "tile" => ModeType::Tile,
+                    "floating" => ModeType::Floating,
+                    other => bail!("Unknown mode '{other}' in chain"),
+                };
+                Ok(ModeStep {
+                    mode,
+                    selection: sel.to_string(),
+                })
+            })
+            .collect();
+    }
+
+    // Collect from individual flags — order follows: bisect, split-x, split-y, tile, floating
+    let mut steps = Vec::new();
+    for sel in bisect {
+        steps.push(ModeStep {
+            mode: ModeType::Bisect,
+            selection: sel,
+        });
+    }
+    for sel in split_x {
+        steps.push(ModeStep {
+            mode: ModeType::SplitX,
+            selection: sel,
+        });
+    }
+    for sel in split_y {
+        steps.push(ModeStep {
+            mode: ModeType::SplitY,
+            selection: sel,
+        });
+    }
+    for sel in tile {
+        steps.push(ModeStep {
+            mode: ModeType::Tile,
+            selection: sel,
+        });
+    }
+    for sel in floating {
+        steps.push(ModeStep {
+            mode: ModeType::Floating,
+            selection: sel,
+        });
+    }
+    Ok(steps)
 }
 
 fn help_text() -> String {

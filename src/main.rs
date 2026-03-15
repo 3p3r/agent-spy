@@ -4,9 +4,11 @@ mod app;
 mod cli;
 mod core;
 mod message;
+mod modes;
+mod overlay;
 mod platform;
 
-fn main() -> iced::Result {
+fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--cli") {
         let exit_code = cli::run_from_args(args);
